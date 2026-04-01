@@ -10,36 +10,67 @@ type ErrorBoundaryProps = {
   onError?: (error: Error, errorInfo: ErrorInfo) => void;
 };
 
-type ErrorBoundaryState = {
-  hasError: boolean;
-  error?: Error;
-};
+type ErrorBoundaryState =
+  | { hasError: false; error: null }
+  | { hasError: true; error: Error };
+
+function normalizeThrownError(error: unknown): Error {
+  if (error instanceof Error) {
+    return error;
+  }
+
+  if (typeof error === 'string') {
+    return new Error(error);
+  }
+
+  if (typeof error === 'object' && error !== null) {
+    const maybeMessage = (error as { message?: unknown }).message;
+    if (typeof maybeMessage === 'string') {
+      const normalizedMessage = maybeMessage.trim();
+      if (normalizedMessage.length > 0) {
+        return new Error(normalizedMessage);
+      }
+    }
+
+    try {
+      return new Error(JSON.stringify(error));
+    } catch {
+      return new Error('Non-Error object was thrown');
+    }
+  }
+
+  return new Error(String(error));
+}
 
 export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
   state: ErrorBoundaryState = {
     hasError: false,
+    error: null,
   };
 
-  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+  static getDerivedStateFromError(error: unknown): ErrorBoundaryState {
     return {
       hasError: true,
-      error,
+      error: normalizeThrownError(error),
     };
   }
 
-  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
-    console.error('ErrorBoundary caught:', error, errorInfo);
-    this.props.onError?.(error, errorInfo);
+  componentDidCatch(error: unknown, errorInfo: ErrorInfo) {
+    const normalizedError = normalizeThrownError(error);
+    console.error('ErrorBoundary caught:', normalizedError, errorInfo);
+    this.props.onError?.(normalizedError, errorInfo);
   }
 
   private readonly resetError = () => {
-    this.setState({ hasError: false, error: undefined });
+    this.setState({ hasError: false, error: null });
   };
 
   render() {
     if (this.state.hasError) {
-      if (this.props.fallback && this.state.error) {
-        return this.props.fallback(this.state.error, this.resetError);
+      const error = this.state.error;
+
+      if (this.props.fallback) {
+        return this.props.fallback(error, this.resetError);
       }
 
       return (
