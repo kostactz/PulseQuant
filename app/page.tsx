@@ -8,6 +8,7 @@ import { OrderBookDepth } from '@/components/OrderBookDepth';
 import { TradesList } from '@/components/TradesList';
 import { Maximize, Activity, TrendingUp, DollarSign, Play, Pause, Trash2, Settings2, RefreshCw, Briefcase, ArrowUpRight, ArrowDownRight, Bot, Code, X, Video, Zap, Lock } from 'lucide-react';
 import { clearRuntimeCredentials } from '@/lib/security/credentials';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
 
 export default function Dashboard() {
   const [isUnlocked, setIsUnlocked] = useState(false);
@@ -566,16 +567,30 @@ export default function Dashboard() {
                 </div>
               </div>
               <div className="w-full h-[calc(100%-4.5rem)]">
-                <RealtimeChart 
-                  ref={chartRef}
-                  data={uiDelta} 
-                  trades={metrics.recent_trades_full} 
-                  timeframeMs={timeframe}
-                  chartType={chartType}
-                  autoScale={autoScale}
-                  followLive={followLive}
-                  visibleSeries={visibleSeries}
-                />
+                <ErrorBoundary
+                  fallback={(error, resetError) => (
+                    <div className="w-full h-full border border-red-200 rounded-lg bg-red-50 p-4 flex flex-col justify-center">
+                      <p className="text-sm text-red-700 mb-3">Chart failed to load: {error.message}</p>
+                      <button
+                        onClick={resetError}
+                        className="self-start px-3 py-1.5 rounded bg-red-600 text-white text-sm hover:bg-red-700"
+                      >
+                        Reload Chart
+                      </button>
+                    </div>
+                  )}
+                >
+                  <RealtimeChart 
+                    ref={chartRef}
+                    data={uiDelta} 
+                    trades={metrics.recent_trades_full} 
+                    timeframeMs={timeframe}
+                    chartType={chartType}
+                    autoScale={autoScale}
+                    followLive={followLive}
+                    visibleSeries={visibleSeries}
+                  />
+                </ErrorBoundary>
               </div>
 
             </div>
