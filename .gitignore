@@ -1,0 +1,48 @@
+node_modules/
+.next/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+public/python/__pycache__/
+public/python/*.py[cod]
+*.py[cod]
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Pytest / test artifacts
+.pytest_cache/
+.benchmarks/
+benchmarks/
+.cache/
+test-results/
+
+# js test artifacts
+playwright-report/
+
+# Coverage outputs
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Mypy
+.mypy_cache/
+
+# Editor config
+.vscode/
+.idea/
+*.pyc
+
+# exports
+replay_report.json

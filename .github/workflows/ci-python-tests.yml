@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+env:
+  CI: true
+
+jobs:
+  python-tests:
+    name: Run Python tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [3.11]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-benchmark numpy pytest-cov
+
+      - name: Run pytest suite
+        run: python -m pytest public/python/tests/ -q
+
+  js-tests:
+    name: Run JS unit + E2E tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [20.19.0]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Install Playwright browsers
+        # Use the Playwright CLI to download browsers. Avoid the deprecated GH action.
+        run: npx playwright install chromium
+
+      - name: Run frontend unit tests (Vitest)
+        run: npm run test:unit
+
+      - name: Run Playwright E2E tests
+        run: npm run test:e2e

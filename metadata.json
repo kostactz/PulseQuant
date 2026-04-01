@@ -1,0 +1,5 @@
+{
+  "name": "Pandas WASM Dashboard",
+  "description": "Client-side Pandas-based application in Next.js using Pyodide in a Web Worker.",
+  "requestFramePermissions": []
+}
