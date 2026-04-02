@@ -79,6 +79,11 @@ export function validateBps(value: any): number {
   return numeric;
 }
 
+export function validateBoolean(value: any): boolean {
+  if (typeof value !== 'boolean') throw new Error(`Invalid boolean value: ${value}`);
+  return value;
+}
+
 function callPyodideFunction(fnName: string, ...args: any[]) {
   const fn = pyodide.globals.get(fnName);
   try {
@@ -269,7 +274,7 @@ self.onmessage = async (e: MessageEvent) => {
       }
     } else if (e.data.type === 'SET_AUTO_TRADE') {
       try {
-        const enabled = Boolean(e.data.enabled);
+        const enabled = validateBoolean(e.data.enabled);
         callPyodideFunction('set_auto_trade', enabled);
         postMessage({ type: 'AUTO_TRADE_UPDATED', enabled });
       } catch (err) {

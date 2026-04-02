@@ -21,17 +21,37 @@ Module.prototype.require = function (id: string, ...args: any[]) {
   return (originalRequire as any).apply(this, [id, ...args]);
 };
 
+function isExpectedEsmImportError(error: any): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const code = (error as any).code;
+  if (code !== 'ERR_REQUIRE_ESM') return false;
+  const message = String(error);
+  return (
+    message.includes('html-encoding-sniffer') ||
+    message.includes('@exodus/bytes/encoding-lite.js') ||
+    message.includes('@exodus/bytes/encoding-lite')
+  );
+}
+
+let hasLoggedSuppressedEsmError = false;
+
 process.on('unhandledRejection', (reason: any) => {
-  const message = String(reason);
-  if (message.includes('ERR_REQUIRE_ESM') || message.includes('html-encoding-sniffer')) {
+  if (isExpectedEsmImportError(reason)) {
+    if (!hasLoggedSuppressedEsmError) {
+      hasLoggedSuppressedEsmError = true;
+      console.warn('[test/setup] Suppressing known ERR_REQUIRE_ESM html-encoding-sniffer/@exodus/bytes import error for unhandledRejection.');
+    }
     return;
   }
   throw reason;
 });
 
 process.on('uncaughtException', (error: any) => {
-  const message = String(error);
-  if (message.includes('ERR_REQUIRE_ESM') || message.includes('html-encoding-sniffer')) {
+  if (isExpectedEsmImportError(error)) {
+    if (!hasLoggedSuppressedEsmError) {
+      hasLoggedSuppressedEsmError = true;
+      console.warn('[test/setup] Suppressing known ERR_REQUIRE_ESM html-encoding-sniffer/@exodus/bytes import error for uncaughtException.');
+    }
     return;
   }
   throw error;

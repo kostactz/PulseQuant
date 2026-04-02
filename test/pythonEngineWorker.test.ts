@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 
 let validateSide: any;
 let validateStyle: any;
@@ -62,34 +62,23 @@ describe('pythonEngine.worker validation helpers', () => {
     expect(() => validateBps(10001)).toThrow(/Invalid bps/);
     expect(() => validateBps('foo')).toThrow(/Invalid bps/);
   });
+
+  it('validates boolean values', async () => {
+    const module = await import('../workers/pythonEngine.worker');
+    expect(module.validateBoolean(true)).toBe(true);
+    expect(module.validateBoolean(false)).toBe(false);
+    expect(() => module.validateBoolean('true')).toThrow(/Invalid boolean/);
+  });
 });
 
 describe('pythonEngine.worker message flow integration', () => {
-  let unhandledRejectionHandler: any;
-  let uncaughtExceptionHandler: any;
-
-  beforeAll(() => {
-    unhandledRejectionHandler = (reason: any) => {
-      if (String(reason).includes('ERR_REQUIRE_ESM') || String(reason).includes('html-encoding-sniffer')) {
-        return;
-      }
-      throw reason;
-    };
-
-    uncaughtExceptionHandler = (error: any) => {
-      if (String(error).includes('ERR_REQUIRE_ESM') || String(error).includes('html-encoding-sniffer')) {
-        return;
-      }
-      throw error;
-    };
-
-    process.on('unhandledRejection', unhandledRejectionHandler);
-    process.on('uncaughtException', uncaughtExceptionHandler);
+  beforeEach(() => {
+    (globalThis as any).self = globalThis;
   });
 
-  afterAll(() => {
-    process.off('unhandledRejection', unhandledRejectionHandler);
-    process.off('uncaughtException', uncaughtExceptionHandler);
+  afterEach(() => {
+    delete (globalThis as any).postMessage;
+    delete (globalThis as any).self;
   });
 
   it('processes UPDATE_STRATEGY, TRADE, SET_AUTO_TRADE, SET_TRADE_SIZE messages', async () => {
@@ -134,9 +123,6 @@ describe('pythonEngine.worker message flow integration', () => {
     expect(postMessageMock).toHaveBeenCalledWith({ type: 'TRADE_EXECUTED' });
     expect(postMessageMock).toHaveBeenCalledWith({ type: 'AUTO_TRADE_UPDATED', enabled: true });
     expect(postMessageMock).toHaveBeenCalledWith({ type: 'TRADE_SIZE_UPDATED', bps: 200 });
-
-    delete (globalThis as any).postMessage;
-    delete (globalThis as any).self;
   });
 
   it('returns ERROR for invalid TRADE/SET_AUTO_TRADE payloads', async () => {
@@ -158,8 +144,5 @@ describe('pythonEngine.worker message flow integration', () => {
     await module._testSendMessage({ type: 'SET_AUTO_TRADE', enabled: 'not-a-bool' });
 
     expect(postMessageMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'ERROR' }));
-
-    delete (globalThis as any).postMessage;
-    delete (globalThis as any).self;
   });
 });
