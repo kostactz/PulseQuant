@@ -78,40 +78,40 @@ def generate_random_params():
         'inventory_skew_factor': 2.5, 
         'dobi_lambda': 0.02, 
         
-        # --- 20 NEW OPTIMIZED PARAMETERS (TIGHTENED) ---
+        # --- 20 (now fixed to engine constants) ---
         # 1-4. Advanced Flow & Position Management
         'enable_flow_invalidation': True,
-        'flow_obi_threshold': random.uniform(1.15, 1.45),  # around 1.299
-        'max_inventory': random.uniform(9.0, 11.5),       # around 10.167
-        'toxicity_resting_obi_multiplier': random.uniform(0.95, 1.3),
+        'flow_obi_threshold': 1.201642774178217,
+        'max_inventory': 11.211088539847164,
+        'toxicity_resting_obi_multiplier': 1.269087505715421,
         
         # 5-6. Core Indicator State Setup
-        'dobi_levels': random.randint(14, 20),
-        'update_interval_ms': random.randint(25, 50),
+        'dobi_levels': 18,
+        'update_interval_ms': 25,
         
         # 7-8. VPIN Sweep Parameters
-        'vpin_alpha': random.uniform(0.35, 0.55),
-        'vpin_sweep_threshold': random.uniform(0.15, 0.35),
+        'vpin_alpha': 0.5056018116224201,
+        'vpin_sweep_threshold': 0.15667675013266968,
         
         # 9-11. Statistical Indicator Bounds
-        'alpha_vwap_decay': random.uniform(0.0003, 0.0012),
-        'bb_std_multiplier': random.uniform(3.0, 4.5),
-        'ofi_clip_bound': random.uniform(6.5, 10.5),
+        'alpha_vwap_decay': 0.0011576180112907173,
+        'bb_std_multiplier': 4.4942490108554605,
+        'ofi_clip_bound': 8.725766452653948,
         
         # 12-15. Asymmetric Toxicity Shifting Dynamics
-        'buy_deriv_shift_cap': random.uniform(0.2, 0.45),
-        'sell_deriv_shift_cap': random.uniform(0.25, 0.5),
-        'buy_deriv_pressure_multiplier': random.uniform(0.15, 0.4),
-        'sell_deriv_pressure_multiplier': random.uniform(1.0, 1.6),
+        'buy_deriv_shift_cap': 0.3310338385352486,
+        'sell_deriv_shift_cap': 0.4944179766147796,
+        'buy_deriv_pressure_multiplier': 0.23789185654197345,
+        'sell_deriv_pressure_multiplier': 1.4029709022807553,
         
         # 16. Buffer Timings
-        'whipsaw_time_buffer_ms': random.uniform(3500.0, 9000.0),
+        'whipsaw_time_buffer_ms': 6271.55438884266,
         
         # 17-20. Session Settings & Order Execution Types
-        'tick_size': random.uniform(0.05, 0.12),
-        'trade_size_bps': random.randint(150, 220),
+        'tick_size': 0.05327427600863069,
+        'trade_size_bps': 185,
         'post_only_mode': True,
-        'chaser_distance_multiplier': random.uniform(0.8, 1.4)
+        'chaser_distance_multiplier': 1.3332895115365753
     }
 
 def evaluate_params(params, trial_id):
