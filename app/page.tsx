@@ -176,17 +176,19 @@ export default function Dashboard() {
             <p className="text-sm text-gray-500">Python Pandas Engine via Pyodide WASM</p>
           </div>
           <div className="flex items-center gap-4">
-            <button
-              onClick={() => {
-                clearRuntimeCredentials();
-                setIsUnlocked(false);
-              }}
-              className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-semibold transition-all shadow-sm bg-gray-100 text-gray-700 border border-gray-200 hover:bg-gray-200"
-              title="Lock Application"
-            >
-              <Lock className="w-4 h-4" />
-              Lock
-            </button>
+            {tradingMode !== 'PAPER' && (
+              <button
+                onClick={() => {
+                  clearRuntimeCredentials();
+                  setIsUnlocked(false);
+                }}
+                className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-semibold transition-all shadow-sm bg-gray-100 text-gray-700 border border-gray-200 hover:bg-gray-200"
+                title="Lock Application"
+              >
+                <Lock className="w-4 h-4" />
+                Lock
+              </button>
+            )}
             {(tradingMode === 'TESTNET' || tradingMode === 'MAINNET') && getRuntimeCredentials() && (
               <button
                 onClick={() => {

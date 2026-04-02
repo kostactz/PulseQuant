@@ -65,6 +65,21 @@ describe('Dashboard smoke tests for onboarding + secure mode gating', () => {
     expect(screen.queryByText('Setup Trading Credentials')).toBeNull();
   });
 
+  it('does not soft-lock and hides Lock in PAPER mode', async () => {
+    render(<Dashboard />);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Got it!' }));
+    await waitFor(() => expect(screen.queryByText('Welcome to PulseQuant')).toBeNull());
+
+    expect(screen.queryByRole('button', { name: /Lock/i })).toBeNull();
+
+    // switch to testnet to confirm lock visible there
+    await userEvent.click(screen.getByRole('button', { name: /Testnet/i }));
+    expect(await screen.findByText('Setup Trading Credentials')).toBeTruthy();
+
+    expect(screen.queryByRole('button', { name: /Lock/i })).toBeTruthy();
+  });
+
   it('switching to testnet with no credentials shows the security setup modal', async () => {
     render(<Dashboard />);
 
