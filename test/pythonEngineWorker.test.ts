@@ -5,6 +5,16 @@ let validateStyle: any;
 let validateSpeed: any;
 let validateBps: any;
 
+// Capture globalThis.fetch before the worker module patches it at import time,
+// so it can be restored after all tests in this file complete.
+let _originalFetch: typeof globalThis.fetch;
+beforeAll(() => {
+  _originalFetch = globalThis.fetch;
+});
+afterAll(() => {
+  globalThis.fetch = _originalFetch;
+});
+
 describe('pythonEngine.worker validation helpers', () => {
   beforeAll(async () => {
     (globalThis as any).self = globalThis;
