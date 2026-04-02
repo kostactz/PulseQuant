@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { usePythonWorker } from '@/hooks/usePythonWorker';
 import { useMarketData } from '@/hooks/useMarketData';
 import { SecuritySetupModal } from '@/components/SecuritySetupModal';
@@ -7,17 +7,32 @@ import { RealtimeChart } from '@/components/RealtimeChart';
 import { OrderBookDepth } from '@/components/OrderBookDepth';
 import { TradesList } from '@/components/TradesList';
 import { Maximize, Activity, TrendingUp, DollarSign, Play, Pause, Trash2, Settings2, RefreshCw, Briefcase, ArrowUpRight, ArrowDownRight, Bot, Code, X, Video, Zap, Lock } from 'lucide-react';
-import { clearRuntimeCredentials } from '@/lib/security/credentials';
+import { clearRuntimeCredentials, clearCredentials, getRuntimeCredentials } from '@/lib/security/credentials';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 
 export default function Dashboard() {
-  const [isUnlocked, setIsUnlocked] = useState(false);
+  const [isUnlocked, setIsUnlocked] = useState(true);
   const [tradingMode, setTradingMode] = useState<'PAPER' | 'TESTNET' | 'MAINNET'>('PAPER');
   const [showLiveConfirm, setShowLiveConfirm] = useState(false);
   const [pendingMode, setPendingMode] = useState<'PAPER' | 'TESTNET' | 'MAINNET' | null>(null);
+  const [showWelcome, setShowWelcome] = useState(false);
   
   const handleIntentRef = useRef<((intent: any) => void) | null>(null);
   
+  const executeModeSwitch = (newMode: 'PAPER' | 'TESTNET' | 'MAINNET') => {
+    setTradingMode(newMode);
+    clearData();
+    clearBuffer();
+
+    if (newMode === 'PAPER') {
+      setIsUnlocked(true);
+    } else if (getRuntimeCredentials()) {
+      setIsUnlocked(true);
+    } else {
+      setIsUnlocked(false);
+    }
+  };
+
   const handleModeSwitch = (newMode: 'PAPER' | 'TESTNET' | 'MAINNET') => {
     if (newMode === tradingMode) return;
     if (newMode === 'MAINNET') {
@@ -26,12 +41,6 @@ export default function Dashboard() {
     } else {
       executeModeSwitch(newMode);
     }
-  };
-
-  const executeModeSwitch = (newMode: 'PAPER' | 'TESTNET' | 'MAINNET') => {
-    setTradingMode(newMode);
-    clearData();
-    clearBuffer();
   };
   const { isReady, metrics, uiDelta, getUIDelta, processBatch, clearData, clearCache, executeTrade, setAutoTrade, updateStrategy, setTradeSize } = usePythonWorker((intent) => {
     if (handleIntentRef.current) handleIntentRef.current(intent);
@@ -61,7 +70,16 @@ export default function Dashboard() {
     handleIntentRef.current = executeIntent;
   }, [executeIntent]);
 
-  
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const seenWelcome = localStorage.getItem('PulseQuant_welcome_shown');
+    if (!seenWelcome) {
+      /* eslint-disable-next-line react-hooks/set-state-in-effect */
+      setShowWelcome(true);
+    }
+  }, []);
+
   const [timeframe, setTimeframe] = useState<number | null>(null);
   const [chartType, setChartType] = useState<'line' | 'candlestick'>('line');
   const [autoScale, setAutoScale] = useState(true);
@@ -124,8 +142,31 @@ export default function Dashboard() {
 
   return (
     <main className="min-h-screen bg-gray-50 text-gray-900 p-6 font-sans">
-      {!isUnlocked && (
-        <SecuritySetupModal onSuccess={() => setIsUnlocked(true)} />
+      {showWelcome && (
+        <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-xl p-6 max-w-lg w-full">
+            <h2 className="text-xl font-bold mb-2">Welcome to PulseQuant</h2>
+            <p className="text-sm text-gray-600 mb-4">
+              Paper mode is enabled by default so you can try strategies without Binance credentials. You can switch to Testnet/Mainnet whenever you are ready.
+            </p>
+            <button
+              onClick={() => {
+                localStorage.setItem('PulseQuant_welcome_shown', '1');
+                setShowWelcome(false);
+              }}
+              className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700"
+            >
+              Got it!
+            </button>
+          </div>
+        </div>
+      )}
+
+      {!isUnlocked && tradingMode !== 'PAPER' && (
+        <SecuritySetupModal
+          onSuccess={() => setIsUnlocked(true)}
+          onSkip={() => executeModeSwitch('PAPER')}
+        />
       )}
       
       <div className={`max-w-6xl mx-auto space-y-6 ${!isUnlocked ? 'blur-sm pointer-events-none' : ''}`}>
@@ -146,6 +187,19 @@ export default function Dashboard() {
               <Lock className="w-4 h-4" />
               Lock
             </button>
+            {(tradingMode === 'TESTNET' || tradingMode === 'MAINNET') && getRuntimeCredentials() && (
+              <button
+                onClick={() => {
+                  clearCredentials();
+                  clearRuntimeCredentials();
+                  setIsUnlocked(false);
+                }}
+                className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-semibold transition-all shadow-sm bg-red-100 text-red-700 border border-red-200 hover:bg-red-200"
+                title="Rotate Credentials"
+              >
+                Rotate Credentials
+              </button>
+            )}
             <div className="flex items-center bg-gray-100 p-1 rounded-lg border border-gray-200">
               <button
                 onClick={() => handleModeSwitch('PAPER')}
