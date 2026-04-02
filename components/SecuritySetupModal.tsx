@@ -5,9 +5,10 @@ import { hasSavedCredentials, loadCredentials, saveCredentials, setRuntimeCreden
 
 interface SecuritySetupModalProps {
   onSuccess: () => void;
+  onSkip?: () => void;
 }
 
-export function SecuritySetupModal({ onSuccess }: SecuritySetupModalProps) {
+export function SecuritySetupModal({ onSuccess, onSkip }: SecuritySetupModalProps) {
   const [isSettingUp, setIsSettingUp] = useState(false);
   const [kek, setKek] = useState('');
   const [apiKey, setApiKey] = useState('');
@@ -180,6 +181,18 @@ export function SecuritySetupModal({ onSuccess }: SecuritySetupModalProps) {
               </button>
             </div>
           </form>
+        )}
+
+        {onSkip && (
+          <div className="mt-4 text-center">
+            <button
+              type="button"
+              onClick={onSkip}
+              className="text-sm text-blue-300 hover:text-blue-100 underline"
+            >
+              Skip for now (return to Paper mode)
+            </button>
+          </div>
         )}
       </div>
     </div>
