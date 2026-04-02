@@ -43,6 +43,53 @@ function sleep(ms: number) {
   return new Promise((res) => setTimeout(res, ms));
 }
 
+/* Helper Functions: Input validation for trade parameters */
+
+const ALLOWED_SIDES = ['buy', 'sell'];
+const ALLOWED_STYLES = ['conservative', 'moderate', 'aggressive'];
+const ALLOWED_SPEEDS = ['slow', 'normal', 'fast'];
+const MIN_BPS = 0;
+const MAX_BPS = 10000; // basis points; 10000 = 100%
+
+export function validateSide(side: any): string {
+  if (typeof side !== 'string') throw new Error('Invalid side: must be a string');
+  const cleaned = side.trim().toLowerCase();
+  if (!ALLOWED_SIDES.includes(cleaned)) throw new Error(`Invalid side: ${side}`);
+  return cleaned;
+}
+
+export function validateStyle(style: any): string {
+  if (typeof style !== 'string') throw new Error('Invalid style: must be a string');
+  const cleaned = style.trim().toLowerCase();
+  if (!ALLOWED_STYLES.includes(cleaned)) throw new Error(`Invalid style: ${style}`);
+  return cleaned;
+}
+
+export function validateSpeed(speed: any): string {
+  if (typeof speed !== 'string') throw new Error('Invalid speed: must be a string');
+  const cleaned = speed.trim().toLowerCase();
+  if (!ALLOWED_SPEEDS.includes(cleaned)) throw new Error(`Invalid speed: ${speed}`);
+  return cleaned;
+}
+
+export function validateBps(value: any): number {
+  const numeric = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(numeric) || Number.isNaN(numeric)) throw new Error(`Invalid bps: ${value}`);
+  if (numeric < MIN_BPS || numeric > MAX_BPS) throw new Error(`Invalid bps: ${value} (must be ${MIN_BPS}-${MAX_BPS})`);
+  return numeric;
+}
+
+function callPyodideFunction(fnName: string, ...args: any[]) {
+  const fn = pyodide.globals.get(fnName);
+  try {
+    return fn(...args);
+  } finally {
+    if (fn && typeof fn.destroy === 'function') fn.destroy();
+  }
+}
+
+/* ******* */
+
 async function initPyodide() {
   if (pandasLoaded || initInProgress) return;
   initInProgress = true;
@@ -208,7 +255,9 @@ self.onmessage = async (e: MessageEvent) => {
       }
     } else if (e.data.type === 'TRADE') {
       try {
-        pyodide.runPython(`execute_trade('${e.data.side}', ${e.data.bps})`);
+        const side = validateSide(e.data.side);
+        const bps = e.data.bps === undefined || e.data.bps === null ? 0 : validateBps(e.data.bps);
+        callPyodideFunction('execute_trade', side, bps);
         postMessage({ type: 'TRADE_EXECUTED' });
       } catch (err) {
         console.error('[Worker] Trade error:', err);
@@ -220,21 +269,28 @@ self.onmessage = async (e: MessageEvent) => {
       }
     } else if (e.data.type === 'SET_AUTO_TRADE') {
       try {
-        pyodide.runPython(`set_auto_trade(${e.data.enabled ? 'True' : 'False'})`);
+        const enabled = Boolean(e.data.enabled);
+        callPyodideFunction('set_auto_trade', enabled);
+        postMessage({ type: 'AUTO_TRADE_UPDATED', enabled });
       } catch (err) {
         console.error('[Worker] Auto trade error:', err);
         postMessage({ type: 'ERROR', error: String(err) });
       }
     } else if (e.data.type === 'UPDATE_STRATEGY') {
       try {
-        pyodide.runPython(`update_strategy('${e.data.style}', '${e.data.speed}')`);
+        const style = validateStyle(e.data.style);
+        const speed = validateSpeed(e.data.speed);
+        callPyodideFunction('update_strategy', style, speed);
+        postMessage({ type: 'STRATEGY_UPDATED', style, speed });
       } catch (err) {
         console.error('[Worker] Update strategy error:', err);
         postMessage({ type: 'ERROR', error: String(err) });
       }
     } else if (e.data.type === 'SET_TRADE_SIZE') {
       try {
-        pyodide.runPython(`set_trade_size(${e.data.bps})`);
+        const bps = validateBps(e.data.bps);
+        callPyodideFunction('set_trade_size', bps);
+        postMessage({ type: 'TRADE_SIZE_UPDATED', bps });
       } catch (err) {
         console.error('[Worker] Set trade size error:', err);
         postMessage({ type: 'ERROR', error: String(err) });
@@ -245,3 +301,17 @@ self.onmessage = async (e: MessageEvent) => {
     postMessage({ type: 'ERROR', error: String(outerErr) });
   }
 };
+
+// Test helpers (must not affect production logic)
+export function _testSetPyodide(mock: any) {
+  pyodide = mock;
+}
+
+export function _testSetPandasLoaded(value: boolean) {
+  pandasLoaded = value;
+}
+
+export function _testSendMessage(message: any) {
+  return (self.onmessage as any)({ data: message });
+}
+
