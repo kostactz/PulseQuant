@@ -73,7 +73,23 @@ export function validateSpeed(speed: any): string {
 }
 
 export function validateBps(value: any): number {
-  const numeric = typeof value === 'number' ? value : Number(value);
+  if (value === null || value === undefined) {
+    throw new Error(`Invalid bps: ${value}`);
+  }
+
+  let numeric: number;
+
+  if (typeof value === 'number') {
+    numeric = value;
+  } else if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed === '') {
+      throw new Error(`Invalid bps: ${value}`);
+    }
+    numeric = Number(trimmed);
+  } else {
+    numeric = Number(value);
+  }
   if (!Number.isFinite(numeric) || Number.isNaN(numeric)) throw new Error(`Invalid bps: ${value}`);
   if (numeric < MIN_BPS || numeric > MAX_BPS) throw new Error(`Invalid bps: ${value} (must be ${MIN_BPS}-${MAX_BPS})`);
   return numeric;
