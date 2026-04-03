@@ -57,6 +57,49 @@ def import_engine(path='public/python/engine.py'):
     spec.loader.exec_module(mod)
     return mod
 
+
+def process_intents_and_simulate_fills(engine, intents, row_ts, row):
+    for intent in intents:
+        action = intent.get('action')
+        client_order_id = intent.get('clientOrderId') or intent.get('client_order_id')
+        if not client_order_id:
+            continue
+
+        if action == 'PLACE_ORDER':
+            qty = float(intent.get('quantity', 0) or 0)
+            price = intent.get('price')
+            side = intent.get('side', '').upper()
+
+            if not price or price == 0:
+                price = row.get('ask', 0.0) if side == 'BUY' else row.get('bid', 0.0)
+
+            engine.process_events([{'type': 'EXECUTION_REPORT', 'data': {
+                'clientOrderId': client_order_id,
+                'status': 'NEW',
+                'lastFilledQuantity': 0,
+                'lastFilledPrice': price,
+                'transactionTime': row_ts
+            }}])
+
+            if qty > 0:
+                engine.process_events([{'type': 'EXECUTION_REPORT', 'data': {
+                    'clientOrderId': client_order_id,
+                    'status': 'FILLED',
+                    'lastFilledQuantity': qty,
+                    'lastFilledPrice': price,
+                    'transactionTime': row_ts
+                }}])
+
+        elif action == 'CANCEL_ORDER':
+            engine.process_events([{'type': 'EXECUTION_REPORT', 'data': {
+                'clientOrderId': client_order_id,
+                'status': 'CANCELED',
+                'lastFilledQuantity': 0,
+                'lastFilledPrice': 0,
+                'transactionTime': row_ts
+            }}])
+
+
 def run_capture(engine, rows, style, speed, bps, warmup_ticks, chunk_size=1000):
     print(f"Initializing engine (Style: {style}, Speed: {speed}, BPS: {bps})")
     engine.clear_data()
@@ -70,6 +113,18 @@ def run_capture(engine, rows, style, speed, bps, warmup_ticks, chunk_size=1000):
     
     engine.set_auto_trade(False)
     
+    def process_tick_batch(batch):
+        if not batch:
+            return None
+
+        result = engine.process_events(batch)
+        if result and result.get('intents'):
+            last_event = batch[-1]
+            row = last_event.get('data', last_event) if isinstance(last_event, dict) else last_event
+            row_ts = row.get('timestamp', int(time.time() * 1000))
+            process_intents_and_simulate_fills(engine, result['intents'], row_ts, row)
+        return result
+
     for i in range(0, total_rows, chunk_size):
         chunk = rows[i:i+chunk_size]
         
@@ -81,18 +136,18 @@ def run_capture(engine, rows, style, speed, bps, warmup_ticks, chunk_size=1000):
                 # Then set it to True and process the rest
                 split_idx = warmup_ticks - i
                 if split_idx > 0:
-                    engine.process_events([{'type': 'TICK', 'data': r} for r in chunk[:split_idx]])
+                    process_tick_batch([{'type': 'TICK', 'data': r} for r in chunk[:split_idx]])
                 
                 print(f"Warmup complete at tick {warmup_ticks}. Enabling auto-trade...")
                 engine.set_auto_trade(True)
                 
                 if split_idx < len(chunk):
-                    engine.process_events([{'type': 'TICK', 'data': r} for r in chunk[split_idx:]])
+                    process_tick_batch([{'type': 'TICK', 'data': r} for r in chunk[split_idx:]])
             else:
-                engine.process_events([{'type': 'TICK', 'data': r} for r in chunk])
+                process_tick_batch([{'type': 'TICK', 'data': r} for r in chunk])
         else:
-            engine.process_events([{'type': 'TICK', 'data': r} for r in chunk])
-            
+            process_tick_batch([{'type': 'TICK', 'data': r} for r in chunk])
+
         # Progress indication
         if (i + chunk_size) % max(1, (total_rows // 10)) < chunk_size:
             progress = min(100, int((i + chunk_size) / total_rows * 100))
@@ -101,7 +156,8 @@ def run_capture(engine, rows, style, speed, bps, warmup_ticks, chunk_size=1000):
     elapsed = time.time() - start_time
     print(f"Replay finished in {elapsed:.2f} seconds ({total_rows / elapsed:.0f} ticks/sec).")
     
-    return engine.process_events([])  # Get final snapshot
+    # Get final snapshot metrics (engine.process_events([]) only returns logs/intents)
+    return engine.get_metrics()
 
 def print_metrics(snapshot):
     print("\n" + "="*50)

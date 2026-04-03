@@ -109,7 +109,7 @@ class IndicatorState:
         self.obi_ema = 0.0
         # Deep OBI configuration
         self.dobi_lambda = 0.02  # exponential decay factor (lambda)
-        self.dobi_levels = 18   # how many levels deep to consider
+        self.dobi_levels = 10   # how many levels deep to consider
         self.vpin_alpha = 0.5056018116224201
         self.vpin_sweep_threshold = 0.15667675013266968
         self.alpha_vwap_decay = 0.0011576180112907173
@@ -666,7 +666,7 @@ class Portfolio:
 
     def execute_trade(self, side, qty, price, timestamp, order_type='taker', indicators=None, reason='', client_order_id=None):
         # Fees: taker pays 0.05%, maker pays 0.02% 
-        fee_rate = 0.0005 if order_type == 'taker' else 0.0002
+        fee_rate = 0.0004 if order_type == 'taker' else -0.0001
         fee = price * qty * fee_rate
         old_pos = self.position
 
