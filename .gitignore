@@ -46,3 +46,5 @@ htmlcov/
 
 # exports
 replay_report.json
+*.parquet
+*report.png
