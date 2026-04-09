@@ -251,10 +251,25 @@ if df_returns.empty:
     print(color_text("ERROR: No valid returns rows after differencing; cannot compute lead-lag correlations.", RED))
     sys.exit(1)
 
+target_vals = df_returns['Target_Returns'].values
+feature_vals = df_returns['Feature_Returns'].values
+
 correlations = {}
 for lag in range(-max_lag, max_lag + 1):
-    shifted_feature = df_returns['Feature_Returns'].shift(lag)
-    corr = df_returns['Target_Returns'].corr(shifted_feature)
+    if lag < 0:
+        t_slice = target_vals[-lag:]
+        f_slice = feature_vals[:lag]
+    elif lag > 0:
+        t_slice = target_vals[:-lag]
+        f_slice = feature_vals[lag:]
+    else:
+        t_slice = target_vals
+        f_slice = feature_vals
+        
+    if len(t_slice) > 1:
+        corr = np.corrcoef(t_slice, f_slice)[0, 1]
+    else:
+        corr = np.nan
     correlations[lag] = corr
 
 valid_correlations = {lag: c for lag, c in correlations.items() if not pd.isna(c)}
@@ -313,8 +328,9 @@ else:
 print("\n[5/7] Calculating Hurst Exponent and Mean-Reversion Half-Life...")
 
 def get_hurst_exponent(ts):
-    lags = range(2, 100)
-    tau = [np.std(np.subtract(ts[lag:], ts[:-lag])) for lag in lags]
+    ts_arr = np.asarray(ts)
+    lags = np.arange(2, 100)
+    tau = [np.std(ts_arr[lag:] - ts_arr[:-lag]) for lag in lags]
     poly = np.polyfit(np.log(lags), np.log(tau), 1)
     return poly[0]
 
@@ -366,13 +382,14 @@ if half_life_seconds > 7200:
 # ==============================================================================
 print("\n[6/7] Calculating Rolling Hedge Ratio (Beta) and Z-Scores...")
 
-exog = sm.add_constant(df['Feature_Price'])
-endog = df['Close']
-rols = RollingOLS(endog, exog, window=rolling_window)
-rres = rols.fit()
+roll_cov = df['Close'].rolling(window=rolling_window).cov(df['Feature_Price'])
+roll_var = df['Feature_Price'].rolling(window=rolling_window).var()
+roll_mean_close = df['Close'].rolling(window=rolling_window).mean()
+roll_mean_feature = df['Feature_Price'].rolling(window=rolling_window).mean()
 
-df['Rolling_Alpha'] = rres.params['const']
-df['Rolling_Beta'] = rres.params['Feature_Price']
+df['Rolling_Beta'] = roll_cov / roll_var
+df['Rolling_Alpha'] = roll_mean_close - (df['Rolling_Beta'] * roll_mean_feature)
+
 df['Dynamic_Spread'] = df['Close'] - (df['Rolling_Beta'].shift(1) * df['Feature_Price']) - df['Rolling_Alpha'].shift(1)
 
 df['Spread_Mean'] = df['Dynamic_Spread'].rolling(window=rolling_window).mean()
