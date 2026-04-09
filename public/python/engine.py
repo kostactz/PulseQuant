@@ -666,7 +666,7 @@ class Portfolio:
 
     def execute_trade(self, side, qty, price, timestamp, order_type='taker', indicators=None, reason='', client_order_id=None):
         # Fees: taker pays 0.05%, maker pays 0.02% 
-        fee_rate = 0.0004 if order_type == 'taker' else -0.0001
+        fee_rate = 0.0005 if order_type == 'taker' else 0.0000
         fee = price * qty * fee_rate
         old_pos = self.position
 
@@ -922,6 +922,7 @@ class TradingSession:
         self.outbound_queue = []
         self.canceled_orders = deque(maxlen=5000)
         self.canceled_orders_total = 0
+        self.immediate_execution = False
         self.last_toxicity_state = {
             'buy_ofi_cancel_level': -0.5,
             'sell_ofi_cancel_level': 0.5,
@@ -979,6 +980,10 @@ def set_auto_trade(enabled):
     session.auto_trade = enabled
     return session.auto_trade
 
+def set_immediate_execution(enabled):
+    session.immediate_execution = bool(enabled)
+    return session.immediate_execution
+
 def update_strategy(style, speed):
     session.strategy.set_params(style, speed)
     session.indicators.reset(session.strategy.get_speed_multiplier())
@@ -996,81 +1001,75 @@ def handle_tick(row, ts):
     toxicity_state = session.strategy.compute_toxicity_state(ind)
     session.last_toxicity_state = toxicity_state.copy()
 
-    # 1. Cancel stale maker orders due to toxicity
-    # We iterate over pending_orders dictionary
-    for order_id, order in list(session.pending_orders.items()):
-        if order.get('status') != 'NEW' and order.get('status') != 'PARTIALLY_FILLED':
-            continue # Skip if not active on exchange
-            
-        should_cancel = False
-        cancel_reason = None
-        trigger_detail = {}
+    if not session.immediate_execution:
+        # 1. Cancel stale maker orders due to toxicity
+        for order_id, order in list(session.pending_orders.items()):
+            if order.get('status') not in ('NEW', 'PARTIALLY_FILLED'):
+                continue
 
-        submitted_at = float(order.get('submitted_at', ts))
-        resting_ms = ts - submitted_at
-        is_violent_sweep = abs(toxicity_state.get('ofi_deriv', 0.0)) > 2.0
+            should_cancel = False
+            cancel_reason = None
+            submitted_at = float(order.get('submitted_at', ts))
+            resting_ms = ts - submitted_at
+            is_violent_sweep = abs(toxicity_state.get('ofi_deriv', 0.0)) > 2.0
 
-        can_apply_toxicity = (resting_ms >= session.strategy.min_rest_ms) or is_violent_sweep
+            can_apply_toxicity = (resting_ms >= session.strategy.min_rest_ms) or is_violent_sweep
 
-        if can_apply_toxicity:
-            obi_norm_val = toxicity_state.get('obi_norm', toxicity_state.get('obi', 0.0))
-            if order['side'] == 'buy':
-                if resting_ms >= session.strategy.min_rest_ms:
-                    ofi_gate = toxicity_state['ofi_ema'] < toxicity_state.get('buy_ofi_cancel_level_resting', toxicity_state['buy_ofi_cancel_level'])
-                    obi_gate = obi_norm_val < -toxicity_state.get('obi_toxicity_threshold_resting', toxicity_state['obi_toxicity_threshold'])
-                else:
-                    ofi_gate = toxicity_state['cancel_buy_maker']
-                    obi_gate = False
+            if can_apply_toxicity:
+                obi_norm_val = toxicity_state.get('obi_norm', toxicity_state.get('obi', 0.0))
+                if order['side'] == 'buy':
+                    if resting_ms >= session.strategy.min_rest_ms:
+                        ofi_gate = toxicity_state['ofi_ema'] < toxicity_state.get('buy_ofi_cancel_level_resting', toxicity_state['buy_ofi_cancel_level'])
+                        obi_gate = obi_norm_val < -toxicity_state.get('obi_toxicity_threshold_resting', toxicity_state['obi_toxicity_threshold'])
+                    else:
+                        ofi_gate = toxicity_state['cancel_buy_maker']
+                        obi_gate = False
 
-                if ofi_gate or obi_gate:
-                    should_cancel = True
-                    cancel_reason = 'buy_toxicity_gate'
-            elif order['side'] == 'sell':
-                if resting_ms >= session.strategy.min_rest_ms:
-                    ofi_gate = toxicity_state['ofi_ema'] > toxicity_state.get('sell_ofi_cancel_level_resting', toxicity_state['sell_ofi_cancel_level'])
-                    obi_gate = obi_norm_val > toxicity_state.get('obi_toxicity_threshold_resting', toxicity_state['obi_toxicity_threshold'])
-                else:
-                    ofi_gate = toxicity_state['cancel_sell_maker']
-                    obi_gate = False
+                    if ofi_gate or obi_gate:
+                        should_cancel = True
+                        cancel_reason = 'buy_toxicity_gate'
+                elif order['side'] == 'sell':
+                    if resting_ms >= session.strategy.min_rest_ms:
+                        ofi_gate = toxicity_state['ofi_ema'] > toxicity_state.get('sell_ofi_cancel_level_resting', toxicity_state['sell_ofi_cancel_level'])
+                        obi_gate = obi_norm_val > toxicity_state.get('obi_toxicity_threshold_resting', toxicity_state['obi_toxicity_threshold'])
+                    else:
+                        ofi_gate = toxicity_state['cancel_sell_maker']
+                        obi_gate = False
 
-                if ofi_gate or obi_gate:
-                    should_cancel = True
-                    cancel_reason = 'sell_toxicity_gate'
-        
-        if should_cancel:
-            order['status'] = 'PENDING_CANCEL'
-            session.outbound_queue.append({
-                'action': 'CANCEL_ORDER',
-                'clientOrderId': order_id,
-                'symbol': 'btcusdt',
-                'reason': cancel_reason
-            })
-            continue
+                    if ofi_gate or obi_gate:
+                        should_cancel = True
+                        cancel_reason = 'sell_toxicity_gate'
 
-    # Chaser update: reprice pending maker exit orders if price moved significantly
-    for order_id, order in list(session.pending_orders.items()):
-        if order.get('status') not in ('NEW', 'PARTIALLY_FILLED'):
-            continue
-        if order.get('type', 'maker') == 'maker' and order.get('chaser'):
-            tick = session.tick_size
-            # Increased reprice threshold for high latency live trading
-            reprice_threshold = tick * 10 
-            if order['side'] == 'buy':
-                target_price = min(row['bid'] + tick, row['ask'] - tick)
-            else:
-                target_price = max(row['ask'] - tick, row['bid'] + tick)
-
-            if abs(order['price'] - target_price) > reprice_threshold:
-                # Cancel and replace
+            if should_cancel:
                 order['status'] = 'PENDING_CANCEL'
                 session.outbound_queue.append({
                     'action': 'CANCEL_ORDER',
                     'clientOrderId': order_id,
                     'symbol': 'btcusdt',
-                    'reason': 'chaser_reprice'
+                    'reason': cancel_reason
                 })
-                # Note: We don't immediately PLACE. A new order will be routed if needed by signal gen.
-                # Or we could emit a MODIFY_ORDER. For simplicity, let the strategy re-emit the signal on next tick.
+                continue
+
+        # 2. Chaser update: reprice pending maker exit orders if price moved significantly
+        for order_id, order in list(session.pending_orders.items()):
+            if order.get('status') not in ('NEW', 'PARTIALLY_FILLED'):
+                continue
+            if order.get('type', 'maker') == 'maker' and order.get('chaser'):
+                tick = session.tick_size
+                reprice_threshold = tick * 10
+                if order['side'] == 'buy':
+                    target_price = min(row['bid'] + tick, row['ask'] - tick)
+                else:
+                    target_price = max(row['ask'] - tick, row['bid'] + tick)
+
+                if abs(order['price'] - target_price) > reprice_threshold:
+                    order['status'] = 'PENDING_CANCEL'
+                    session.outbound_queue.append({
+                        'action': 'CANCEL_ORDER',
+                        'clientOrderId': order_id,
+                        'symbol': 'btcusdt',
+                        'reason': 'chaser_reprice'
+                    })
 
     session.ui_timestamps.append(ts)
     session.ui_mid_prices.append(ind['micro_price'])
@@ -1135,7 +1134,21 @@ def handle_tick(row, ts):
                 qty_to_trade = (session.portfolio.get_metrics(price_ref) * (auto_bps / 10000.0)) / price_ref
 
             if qty_to_trade > 0:
-                route_order(side, qty_to_trade, order_type, row, ind.copy(), ts, reason_text)
+                if session.immediate_execution:
+                    # Immediate execution path: apply trade instantly to portfolio
+                    execute_price = row['ask'] if side == 'buy' else row['bid']
+                    session.portfolio.execute_trade(
+                        side=side,
+                        qty=qty_to_trade,
+                        price=execute_price,
+                        timestamp=ts,
+                        order_type=order_type,
+                        indicators=ind.copy(),
+                        reason=reason_text,
+                        client_order_id=None
+                    )
+                else:
+                    route_order(side, qty_to_trade, order_type, row, ind.copy(), ts, reason_text)
 
 def route_order(side, qty, order_type, price_reference_row, ind_copy, ts, signal_reason=''):
     client_order_id = str(uuid.uuid4())

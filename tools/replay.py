@@ -100,11 +100,16 @@ def process_intents_and_simulate_fills(engine, intents, row_ts, row):
             }}])
 
 
-def run_capture(engine, rows, style, speed, bps, warmup_ticks, chunk_size=1000):
-    print(f"Initializing engine (Style: {style}, Speed: {speed}, BPS: {bps})")
+def run_capture(engine, rows, style, speed, bps, warmup_ticks, chunk_size=1000, execution_mode='exchange'):
+    print(f"Initializing engine (Style: {style}, Speed: {speed}, BPS: {bps}, Mode: {execution_mode})")
     engine.clear_data()
     engine.update_strategy(style, speed)
     engine.set_trade_size(bps)
+    if execution_mode == 'immediate':
+        if hasattr(engine, 'set_immediate_execution'):
+            engine.set_immediate_execution(True)
+        elif hasattr(engine.session, 'immediate_execution'):
+            engine.session.immediate_execution = True
     
     total_rows = len(rows)
     print(f"Starting replay. Warmup ticks: {warmup_ticks}")
@@ -214,6 +219,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="PulseQuant Headless Engine Replay")
     parser.add_argument('--input', '-i', required=True, help="Path to the .jsonl or .jsonl.gz capture file")
     parser.add_argument('--engine', '-e', default='public/python/engine.py', help="Path to engine.py")
+    parser.add_argument('--execution-mode', default='exchange', choices=['exchange', 'immediate'], help="Execution mode: exchange lifecycle or immediate dictionary" )
     parser.add_argument('--style', default='moderate', choices=['conservative', 'moderate', 'aggressive'], help="Trading style")
     parser.add_argument('--speed', default='normal', choices=['slow', 'normal', 'fast'], help="Signal speed")
     parser.add_argument('--bps', type=int, default=100, help="Trade size in basis points (bps)")
@@ -231,13 +237,14 @@ if __name__ == '__main__':
     engine = import_engine(args.engine)
     
     final_snapshot = run_capture(
-        engine, 
-        rows, 
-        style=args.style, 
-        speed=args.speed, 
-        bps=args.bps, 
+        engine,
+        rows,
+        style=args.style,
+        speed=args.speed,
+        bps=args.bps,
         warmup_ticks=args.warmup_ticks,
-        chunk_size=args.chunk_size
+        chunk_size=args.chunk_size,
+        execution_mode=args.execution_mode
     )
     
     print_metrics(final_snapshot)
