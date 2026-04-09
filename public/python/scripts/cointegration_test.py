@@ -467,7 +467,7 @@ ax_ts.set_ylabel('Price')
 ax_ts.legend(loc='upper left')
 ax_ts.grid(True, alpha=0.3)
 fig_ts.tight_layout()
-output_validation_path = 'cointegration_validation_timeseries.png'
+output_validation_path = 'cointegration_validation_timeseries.report.png'
 fig_ts.savefig(output_validation_path, dpi=150, bbox_inches='tight')
 plt.close(fig_ts)
 print(f"Saved plot: {output_validation_path}")
@@ -510,7 +510,7 @@ ax4.legend(loc='upper right')
 ax4.grid(True, alpha=0.3)
 
 plt.tight_layout()
-output_path = 'cointegration_report.png'
+output_path = 'cointegration_analysis.report.png'
 fig.savefig(output_path, dpi=150, bbox_inches='tight')
 plt.close(fig)
 print(f"Saved plot: {output_path}")
