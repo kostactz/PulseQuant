@@ -251,8 +251,16 @@ if df_returns.empty:
     print(color_text("ERROR: No valid returns rows after differencing; cannot compute lead-lag correlations.", RED))
     sys.exit(1)
 
-target_vals = df_returns['Target_Returns'].values
-feature_vals = df_returns['Feature_Returns'].values
+# Use the first 20% of the data for finding the lead-lag relationship to avoid look-ahead bias
+split_idx = int(len(df_returns) * 0.2)
+train_returns = df_returns.iloc[:split_idx].copy()
+
+# Smooth returns to reduce microstructure noise
+train_returns['Target_Returns_Smoothed'] = train_returns['Target_Returns'].ewm(span=5, adjust=False).mean()
+train_returns['Feature_Returns_Smoothed'] = train_returns['Feature_Returns'].ewm(span=5, adjust=False).mean()
+
+target_vals = train_returns['Target_Returns_Smoothed'].values
+feature_vals = train_returns['Feature_Returns_Smoothed'].values
 
 correlations = {}
 for lag in range(-max_lag, max_lag + 1):
@@ -281,21 +289,72 @@ best_lag = max(valid_correlations, key=lambda k: abs(valid_correlations[k]))
 best_corr = valid_correlations[best_lag]
 print(f"Highest correlation ({best_corr:.4f}) found at lag: {best_lag}")
 
-if best_lag > 0:
-    print(color_text(f"-> Conclusion: {feature_ticker} LEADS {target_ticker} by {best_lag} periods. (Highly useful)", GREEN))
-    print(f"   Aligning data: Shifting Feature forward by {best_lag} periods to prevent lookahead bias.")
-    # Shift the feature price forward to align with the target's lead
-    df['Feature_Price'] = df['Feature_Price'].shift(best_lag)
+# In this alignment logic:
+# If lag > 0, t_slice is earlier, f_slice is later. e.g. T[0] and F[1]. Target predicts Feature.
+# If lag < 0, t_slice is later, f_slice is earlier. e.g. T[1] and F[0]. Feature predicts Target. We want this!
+if best_lag < 0:
+    abs_lag = abs(best_lag)
+    print(color_text(f"-> Conclusion: {feature_ticker} LEADS {target_ticker} by {abs_lag} periods. (Highly useful)", GREEN))
+    print(f"   Aligning data: Shifting Feature forward by {abs_lag} periods to prevent lookahead bias.")
+    df['Feature_Price'] = df['Feature_Price'].shift(abs_lag)
     df = df.dropna()
-elif best_lag < 0:
-    print(color_text(f"-> Conclusion: {target_ticker} LEADS {feature_ticker}. ({feature_ticker} is likely useless for predicting {target_ticker})", RED))
+elif best_lag > 0:
+    print(color_text(f"-> Conclusion: {target_ticker} LEADS {feature_ticker} by {best_lag} periods. ({feature_ticker} is likely useless for predicting {target_ticker})", RED))
 else:
     print(color_text(f"-> Conclusion: Both assets move synchronously. (Useful for mean reversion, but latency execution is tough)", YELLOW))
 
+
 # ==============================================================================
-# 4. STATIC OLS & COINTEGRATION (ADF TEST)
+# 4. ROLLING METRICS & SIGNAL GENERATION
 # ==============================================================================
-print("\n[4/7] Calculating Static Hedge Ratio and Testing Cointegration...")
+print("\n[4/7] Calculating Rolling Hedge Ratio (Beta) and Z-Scores...")
+
+roll_cov = df['Close'].rolling(window=rolling_window).cov(df['Feature_Price'])
+roll_var = df['Feature_Price'].rolling(window=rolling_window).var()
+roll_mean_close = df['Close'].rolling(window=rolling_window).mean()
+roll_mean_feature = df['Feature_Price'].rolling(window=rolling_window).mean()
+
+df['Rolling_Beta'] = roll_cov / roll_var
+df['Rolling_Alpha'] = roll_mean_close - (df['Rolling_Beta'] * roll_mean_feature)
+
+df['Dynamic_Spread'] = df['Close'] - (df['Rolling_Beta'].shift(1) * df['Feature_Price']) - df['Rolling_Alpha'].shift(1)
+
+df['Spread_Mean'] = df['Dynamic_Spread'].rolling(window=rolling_window).mean()
+df['Spread_Std'] = df['Dynamic_Spread'].rolling(window=rolling_window).std()
+df = df.dropna()
+df['Z_Score'] = (df['Dynamic_Spread'] - df['Spread_Mean'].shift(1)) / df['Spread_Std'].shift(1)
+df = df.dropna()
+
+df['Z_Above'] = df['Z_Score'] > 2.0
+df['Z_Below'] = df['Z_Score'] < -2.0
+
+prev_above = df['Z_Above'].shift(1, fill_value=False)
+prev_below = df['Z_Below'].shift(1, fill_value=False)
+
+df['Signal_Above_Cross'] = df['Z_Above'] & (~prev_above)
+df['Signal_Below_Cross'] = df['Z_Below'] & (~prev_below)
+
+bullish_signals = int(df['Signal_Below_Cross'].sum())
+bearish_signals = int(df['Signal_Above_Cross'].sum())
+raw_exceedance_count = int(df['Z_Above'].sum() + df['Z_Below'].sum())
+raw_exceedance_pct = raw_exceedance_count / len(df) if len(df) > 0 else 0.0
+
+print(f"Identified {bullish_signals} bullish signals and {bearish_signals} bearish signals based.")
+print(f"       Total raw exceedances outside ±2σ: {raw_exceedance_count} rows ({raw_exceedance_pct:.2%}), including persistence of the same signal.")
+
+signal_count = bullish_signals + bearish_signals
+signal_pct = signal_count / len(df) if len(df) > 0 else 0.0
+if raw_exceedance_pct > 0.045:
+    print(color_text("   !!! WARNING: The Z-score exceedance rate is unusually high.", YELLOW))
+    print(color_text(f"       {raw_exceedance_count} out of {len(df)} points ({raw_exceedance_pct:.2%}) exceed ±2σ.", YELLOW))
+    print(color_text("       In a normal distribution, ±2σ events should occur only about 4.5% of the time.", YELLOW))
+    print(color_text("       This strongly suggests the spread distribution has extremely fat tails, or more likely, the rolling window for Z-score calculation is too short.", YELLOW))
+
+
+# ==============================================================================
+# 5. STATIC OLS & COINTEGRATION (ADF TEST)
+# ==============================================================================
+print("\n[5/7] Calculating Static Hedge Ratio and Testing Cointegration...")
 
 X = sm.add_constant(df['Feature_Price'])
 Y = df['Close']
@@ -307,10 +366,10 @@ df['Static_Spread'] = df['Close'] - (static_beta * df['Feature_Price'])
 print(f"Static Hedge Ratio (Beta): {static_beta:.4f}")
 
 try:
-    adf_result = adfuller(df['Static_Spread'].dropna())
+    adf_result = adfuller(df['Dynamic_Spread'].dropna())
     p_value = adf_result[1]
     
-    print(f"ADF Statistic: {adf_result[0]:.4f}")
+    print(f"ADF Statistic (Dynamic Spread): {adf_result[0]:.4f}")
     print(f"ADF P-Value: {p_value:.6f}")
 except ValueError as e:
     print(f"ADF Error: {e}")
@@ -318,31 +377,63 @@ except ValueError as e:
 
 is_cointegrated = p_value < 0.05
 if is_cointegrated:
-    print(color_text(f"-> Conclusion: The spread IS stationary (Cointegrated). P-Value < 0.05.", GREEN))
+    print(color_text(f"-> Conclusion: The dynamic spread IS stationary (Cointegrated). P-Value < 0.05.", GREEN))
 else:
-    print(color_text(f"-> Conclusion: The spread is NOT stationary (Not Cointegrated). P-Value >= 0.05.", RED))
+    print(color_text(f"-> Conclusion: The dynamic spread is NOT stationary (Not Cointegrated). P-Value >= 0.05.", RED))
 
 # ==============================================================================
-# 5. ADVANCED METRICS: HURST & HALF-LIFE
+# 6. ADVANCED METRICS: HURST & HALF-LIFE
 # ==============================================================================
-print("\n[5/7] Calculating Hurst Exponent and Mean-Reversion Half-Life...")
+print("\n[6/7] Calculating Hurst Exponent and Mean-Reversion Half-Life...")
 
-def get_hurst_exponent(ts):
+def get_hurst_exponent_dynamic(ts, rolling_window):
     ts_arr = np.asarray(ts)
-    lags = np.arange(2, 100)
-    tau = [np.std(ts_arr[lag:] - ts_arr[:-lag]) for lag in lags]
-    poly = np.polyfit(np.log(lags), np.log(tau), 1)
-    return poly[0]
+    
+    # Do not exceed half the dataset length, or the rolling window
+    max_lag = min(len(ts_arr) // 2, rolling_window)
+    
+    # If the window is huge, check 50 exponentially spaced points instead of every single tick
+    if max_lag > 500:
+        lags = np.unique(np.geomspace(2, max_lag, num=50).astype(int))
+    else:
+        lags = np.arange(2, max_lag)
+        
+    # Use variance instead of standard deviation (avoids sqrt cost until the end)
+    tau = np.array([np.var(ts_arr[lag:] - ts_arr[:-lag]) for lag in lags])
+    
+    # Add a tiny epsilon to prevent log(0) errors on perfectly flat ticks
+    poly = np.polyfit(np.log(lags), np.log(tau + 1e-10), 1)
+    
+    # Divide by 2 because we used variance instead of std dev
+    return poly[0] / 2.0
 
-def get_half_life(ts):
-    df_temp = pd.DataFrame({'lag': ts.shift(1), 'diff': ts.diff()}).dropna()
+def get_half_life(ts, interval_str):
+    # Down-sample to 1-minute intervals for half-life OLS estimation
+    try:
+        ts_1m = ts.resample('1T').last().dropna()
+        if len(ts_1m) < 10:
+            ts_1m = ts # fallback if not enough data
+    except Exception:
+        ts_1m = ts
+    df_temp = pd.DataFrame({'lag': ts_1m.shift(1), 'diff': ts_1m.diff()}).dropna()
     X = sm.add_constant(df_temp['lag'])
     Y = df_temp['diff']
     res = sm.OLS(Y, X).fit()
     if len(res.params) < 2:
         return np.inf
     lam = res.params['lag']
-    return -np.log(2) / lam if lam < 0 else np.inf
+    # If we downsampled to 1m, the lambda is per minute.
+    # Convert half-life back to periods by considering frequency ratio
+    hl_periods = -np.log(2) / lam if lam < 0 else np.inf
+    
+    # Calculate ratio of current interval to the sampled one
+    original_sec = parse_interval_seconds(interval_str)
+    resampled_sec = 60 # 1 minute
+    if isinstance(ts_1m.index.freq, pd.offsets.Minute) or (len(ts_1m) != len(ts)):
+        # We did resample to 1T
+        hl_periods = hl_periods * (resampled_sec / original_sec)
+        
+    return hl_periods
 
 interval_seconds_map = {
     's': 1,
@@ -367,8 +458,8 @@ def format_duration(seconds):
         return f'{seconds / 60:.2f} minutes'
     return f'{seconds:.2f} seconds'
 
-hurst = get_hurst_exponent(df['Static_Spread'].values)
-half_life = get_half_life(df['Static_Spread'])
+hurst = get_hurst_exponent_dynamic(df['Dynamic_Spread'].dropna().values, rolling_window)
+half_life = get_half_life(df['Dynamic_Spread'].dropna(), interval)
 half_life_seconds = half_life * parse_interval_seconds(interval)
 half_life_readable = format_duration(half_life_seconds)
 
@@ -433,7 +524,7 @@ signal_warning = raw_exceedance_pct > 0.045
 half_life_warning = half_life_seconds > 7200
 mean_reversion_warning = hurst >= 0.4
 cointegration_warning = not is_cointegrated
-lead_lag_warning = best_lag < -1
+lead_lag_warning = best_lag > 1
 
 if not is_cointegrated:
     print(color_text(f"VERDICT: NO. Cointegration is weak or absent (ADF p-value = {p_value:.6f}). Spread is unlikely to be stationary.", RED))
@@ -451,7 +542,7 @@ elif half_life_warning:
 elif signal_warning:
     print(color_text(f"VERDICT: NO. Excessive ±2σ Z-score signals ({signal_pct:.2%}) indicate fat tails or an unstable Z-score window, reducing strategy reliability.", RED))
 else:
-    print(color_text(f"VERDICT: YES. {feature_ticker} is cointegrated, {best_lag} lag is acceptable, the spread appears mean-reverting, and the half-life is appropriate.", GREEN))
+    print(color_text(f"VERDICT: YES. {feature_ticker} is cointegrated, lag is acceptable, the spread appears mean-reverting, and the half-life is appropriate.", GREEN))
 
 print("\n[7/7] Generating Proof Diagrams...")
 
