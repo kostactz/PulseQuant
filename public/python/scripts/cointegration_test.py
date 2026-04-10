@@ -80,7 +80,8 @@ parser.add_argument('--feature-ticker', default='ETHUSDT', help='Binance ticker 
 parser.add_argument('--interval', default='1s', help='Binance klines interval.')
 parser.add_argument('--start-time', default='2026-01-22T00:00:00', help='Start timestamp in ISO format.')
 parser.add_argument('--end-time', default='2026-01-26T00:00:00', help='End timestamp in ISO format.')
-parser.add_argument('--rolling-window', type=int, default=800, help='Rolling window size used for rolling beta and z-score calculations.')
+parser.add_argument('--rolling-window', default='800', help='Rolling window size used for rolling beta and z-score calculations. Can be "auto".')
+parser.add_argument('--rolling-window-only', action='store_true', help='Only calculate the optimal rolling window and exit.')
 args = parser.parse_args()
 
 target_ticker = args.target_ticker
@@ -92,7 +93,11 @@ cache_dir = Path(args.data_dir)
 cache_dir.mkdir(parents=True, exist_ok=True)
 use_cached_data = args.use_data
 store_cached_data = args.store_data
-rolling_window = args.rolling_window
+if args.rolling_window.lower() == 'auto':
+    rolling_window = 'auto'
+else:
+    rolling_window = int(args.rolling_window)
+rolling_window_only = args.rolling_window_only
 
 # Rolling window for intervals, incl. z-score.
 # This should generally be in the range of 1x-2x expected mean reversion half-life to avoid excessive false signals.
@@ -304,31 +309,211 @@ else:
 
 
 # ==============================================================================
+# Helper functions for calculations and Walk-Forward Optimization
+# ==============================================================================
+interval_seconds_map = {
+    's': 1, 'm': 60, 'h': 3600, 'd': 86400, 'w': 604800, 'M': 2592000,
+}
+
+def parse_interval_seconds(interval_str):
+    unit = interval_str[-1]
+    value = int(interval_str[:-1])
+    return value * interval_seconds_map.get(unit, 0)
+
+def format_duration(seconds):
+    if seconds == np.inf:
+        return 'infinite'
+    if seconds >= 3600:
+        return f'{seconds / 3600:.2f} hours'
+    if seconds >= 60:
+        return f'{seconds / 60:.2f} minutes'
+    return f'{seconds:.2f} seconds'
+
+def get_hurst_exponent_dynamic(ts, rolling_window):
+    ts_arr = np.asarray(ts)
+    max_lag = min(len(ts_arr) // 2, rolling_window)
+    if max_lag > 500:
+        lags = np.unique(np.geomspace(2, max_lag, num=50).astype(int))
+    else:
+        lags = np.arange(2, max_lag)
+    tau = np.array([np.var(ts_arr[lag:] - ts_arr[:-lag]) for lag in lags])
+    poly = np.polyfit(np.log(lags), np.log(tau + 1e-10), 1)
+    return poly[0] / 2.0
+
+def get_half_life(ts, interval_str):
+    try:
+        ts_1m = ts.resample('1T').last().dropna()
+        if len(ts_1m) < 10:
+            ts_1m = ts
+    except Exception:
+        ts_1m = ts
+    df_temp = pd.DataFrame({'lag': ts_1m.shift(1), 'diff': ts_1m.diff()}).dropna()
+    X = sm.add_constant(df_temp['lag'])
+    Y = df_temp['diff']
+    res = sm.OLS(Y, X).fit()
+    if len(res.params) < 2:
+        return np.inf
+    lam = res.params['lag']
+    hl_periods = -np.log(2) / lam if lam < 0 else np.inf
+    original_sec = parse_interval_seconds(interval_str)
+    resampled_sec = 60
+    if isinstance(ts_1m.index.freq, pd.offsets.Minute) or (len(ts_1m) != len(ts)):
+        hl_periods = hl_periods * (resampled_sec / original_sec)
+    return hl_periods
+
+def calculate_rolling_metrics(df_in, window_size):
+    df_calc = df_in.copy()
+    df_calc['EWM_Cov'] = df_calc['Close'].ewm(span=window_size).cov(df_calc['Feature_Price'])
+    df_calc['EWM_Var'] = df_calc['Feature_Price'].ewm(span=window_size).var()
+    df_calc['EWM_Mean_Close'] = df_calc['Close'].ewm(span=window_size).mean()
+    df_calc['EWM_Mean_Feature'] = df_calc['Feature_Price'].ewm(span=window_size).mean()
+    
+    df_calc['Rolling_Beta'] = df_calc['EWM_Cov'] / df_calc['EWM_Var']
+    df_calc['Rolling_Alpha'] = df_calc['EWM_Mean_Close'] - (df_calc['Rolling_Beta'] * df_calc['EWM_Mean_Feature'])
+    
+    df_calc['Dynamic_Spread'] = (df_calc['Close'] - 
+                                 (df_calc['Rolling_Beta'].shift(1) * df_calc['Feature_Price']) - 
+                                 df_calc['Rolling_Alpha'].shift(1))
+    
+    df_calc['Spread_Mean'] = df_calc['Dynamic_Spread'].rolling(window=window_size).mean()
+    df_calc['Spread_Std'] = df_calc['Dynamic_Spread'].rolling(window=window_size).std()
+    
+    df_calc['Z_Score'] = (df_calc['Dynamic_Spread'] - df_calc['Spread_Mean']) / (df_calc['Spread_Std'] + 1e-10)
+    return df_calc
+
+def optimize_rolling_window(df_in, half_life_periods):
+    print(f"\n[Opt] Starting Walk-Forward Optimization for Rolling Window...")
+    print(f"      Baseline Half-Life: {half_life_periods:.2f} periods")
+    
+    if np.isinf(half_life_periods) or np.isnan(half_life_periods):
+        print(color_text("      -> Half-Life is invalid. Falling back to default window of 800.", YELLOW))
+        return 800
+
+    min_window = max(50, int(5 * half_life_periods))
+    max_window = max(100, int(10 * half_life_periods))
+    
+    # We test in steps of 10 or 50 depending on range
+    step = max(10, (max_window - min_window) // 10)
+    candidate_windows = list(range(min_window, max_window + 1, step))
+    print(f"      Candidate Windows: {candidate_windows}")
+    
+    # Walk-forward split: chronological chunks, train on 70%, test on 30% of each chunk
+    chunk_size = min(len(df_in), int(parse_interval_seconds('8h') / parse_interval_seconds(interval))) # ~8 hours
+    if chunk_size < 500:
+        chunk_size = len(df_in)
+    
+    chunks = [df_in.iloc[i:i + chunk_size] for i in range(0, len(df_in), chunk_size)]
+    if len(chunks) > 1 and len(chunks[-1]) < 0.2 * chunk_size:
+        chunks.pop() # Drop extremely small last chunk
+    
+    scores = {w: {'sharpe': [], 'mdd': [], 'pvalue': []} for w in candidate_windows}
+    
+    for c_idx, chunk in enumerate(chunks):
+        train_len = int(len(chunk) * 0.7)
+        if train_len < max_window: continue
+        
+        train_df = chunk.iloc[:train_len]
+        test_df = chunk.iloc[train_len:]
+        
+        for w in candidate_windows:
+            test_calc = calculate_rolling_metrics(chunk, w).iloc[train_len:].dropna(subset=['Z_Score'])
+            if len(test_calc) < 10: continue
+            
+            # Simple strategy simulation
+            z = test_calc['Z_Score'].values
+            pos = 0
+            returns = []
+            features = test_calc['Feature_Price'].values
+            targets = test_calc['Close'].values
+            betas = test_calc['Rolling_Beta'].shift(1).values
+            alphas = test_calc['Rolling_Alpha'].shift(1).values
+            
+            spread_returns = np.zeros(len(test_calc))
+            for i in range(1, len(test_calc)):
+                # Spread = Target - Beta * Feature
+                target_ret = np.log(targets[i]/targets[i-1]) if targets[i-1]>0 else 0
+                feature_ret = np.log(features[i]/features[i-1]) if features[i-1]>0 else 0
+                spread_return = target_ret - betas[i]*feature_ret
+                
+                # Z-score based simple mean reversion
+                if z[i-1] < -2.0: pos = 1
+                elif z[i-1] > 2.0: pos = -1
+                elif pos == 1 and z[i-1] >= 0: pos = 0
+                elif pos == -1 and z[i-1] <= 0: pos = 0
+
+                spread_returns[i] = pos * spread_return
+                
+            sr_mean = np.mean(spread_returns)
+            sr_std = np.std(spread_returns) + 1e-10
+            sharpe = (sr_mean / sr_std) * np.sqrt(252 * 86400 / parse_interval_seconds(interval)) # Annualized
+            
+            cum_returns = np.cumsum(spread_returns)
+            peak = np.maximum.accumulate(cum_returns)
+            drawdown = peak - cum_returns
+            mdd = np.max(drawdown)
+            
+            # ADF test for stationarity
+            try:
+                pval = coint(test_calc['Close'], test_calc['Feature_Price'])[1]
+            except Exception:
+                pval = 1.0
+
+            scores[w]['sharpe'].append(sharpe)
+            scores[w]['mdd'].append(mdd)
+            scores[w]['pvalue'].append(pval)
+
+    best_score = -np.inf
+    best_w = candidate_windows[0]
+    
+    print("\n      Optimization Results Summary:")
+    for w in candidate_windows:
+        avg_sharpe = np.mean(scores[w]['sharpe']) if scores[w]['sharpe'] else 0
+        avg_mdd = np.mean(scores[w]['mdd']) if scores[w]['mdd'] else 0
+        avg_pval = np.mean(scores[w]['pvalue']) if scores[w]['pvalue'] else 1.0
+        
+        # Penalize non-stationary windows
+        penalty = 1.0
+        if avg_pval > 0.05:
+            penalty = 0.5
+        
+        # Basic fitness score (Sharpe - Penalty for Drawdown)
+        score = (avg_sharpe - avg_mdd * 10) * penalty
+        
+        print(f"      Window {w:4d}: Sharpe={avg_sharpe:6.2f}, MaxDD={avg_mdd:6.4f}, ADF P-Val={avg_pval:6.4f}, Score={score:6.2f}")
+        
+        if score > best_score:
+            best_score = score
+            best_w = w
+
+    print(color_text(f"      -> Optimal Rolling Window Selected: {best_w} (Score: {best_score:.2f})", GREEN))
+    return best_w
+
+# ==============================================================================
 # 4. ROLLING METRICS & SIGNAL GENERATION
 # ==============================================================================
+if rolling_window == 'auto':
+    # Base static OLS calculation for half-life
+    print("\n[Prep] Calculating baseline static half-life for optimization...")
+    X_stat = sm.add_constant(df['Feature_Price'])
+    Y_stat = df['Close']
+    base_model = sm.OLS(Y_stat, X_stat).fit()
+    base_spread = base_model.resid
+    base_hl = get_half_life(base_spread, interval)
+    
+    optimal_window = optimize_rolling_window(df, base_hl)
+    rolling_window = optimal_window
+    
+    if rolling_window_only:
+        print(color_text(f"\nOptimization complete. Optimal Window: {rolling_window}. Exiting as requested.", GREEN))
+        sys.exit(0)
+
 print("\n[4/7] Calculating EWM Hedge Ratio (Beta) and Z-Scores...")
 
-# Use EWM to prevent "ghost effects" from unweighted rolling windows dropping outliers
-df['EWM_Cov'] = df['Close'].ewm(span=rolling_window).cov(df['Feature_Price'])
-df['EWM_Var'] = df['Feature_Price'].ewm(span=rolling_window).var()
-df['EWM_Mean_Close'] = df['Close'].ewm(span=rolling_window).mean()
-df['EWM_Mean_Feature'] = df['Feature_Price'].ewm(span=rolling_window).mean()
+df = calculate_rolling_metrics(df, rolling_window)
 
-# Calculate Beta and Alpha
-df['Rolling_Beta'] = df['EWM_Cov'] / df['EWM_Var']
-df['Rolling_Alpha'] = df['EWM_Mean_Close'] - (df['Rolling_Beta'] * df['EWM_Mean_Feature'])
-
-# Calculate the strictly out-of-sample spread
-# What is the spread TODAY using YESTERDAY's hedge ratio?
-df['Dynamic_Spread'] = df['Close'] - (df['Rolling_Beta'].shift(1) * df['Feature_Price']) - df['Rolling_Alpha'].shift(1)
-
-# Standardize the spread concurrently
-df['Spread_Mean'] = df['Dynamic_Spread'].rolling(window=rolling_window).mean()
-df['Spread_Std'] = df['Dynamic_Spread'].rolling(window=rolling_window).std()
-
-# Z-Score: We add a tiny epsilon to prevent division by zero
-df['Z_Score'] = (df['Dynamic_Spread'] - df['Spread_Mean']) / (df['Spread_Std'] + 1e-10)
+# Extract rolling variables back for existing downstream logic
 df = df.dropna()
+
 
 df['Z_Above'] = df['Z_Score'] > 2.0
 df['Z_Below'] = df['Z_Score'] < -2.0
@@ -397,77 +582,8 @@ else:
 # ==============================================================================
 print("\n[6/7] Calculating Hurst Exponent and Mean-Reversion Half-Life...")
 
-def get_hurst_exponent_dynamic(ts, rolling_window):
-    ts_arr = np.asarray(ts)
-    
-    # Do not exceed half the dataset length, or the rolling window
-    max_lag = min(len(ts_arr) // 2, rolling_window)
-    
-    # If the window is huge, check 50 exponentially spaced points instead of every single tick
-    if max_lag > 500:
-        lags = np.unique(np.geomspace(2, max_lag, num=50).astype(int))
-    else:
-        lags = np.arange(2, max_lag)
-        
-    # Use variance instead of standard deviation (avoids sqrt cost until the end)
-    tau = np.array([np.var(ts_arr[lag:] - ts_arr[:-lag]) for lag in lags])
-    
-    # Add a tiny epsilon to prevent log(0) errors on perfectly flat ticks
-    poly = np.polyfit(np.log(lags), np.log(tau + 1e-10), 1)
-    
-    # Divide by 2 because we used variance instead of std dev
-    return poly[0] / 2.0
+# These functions have been moved up
 
-def get_half_life(ts, interval_str):
-    # Down-sample to 1-minute intervals for half-life OLS estimation
-    try:
-        ts_1m = ts.resample('1T').last().dropna()
-        if len(ts_1m) < 10:
-            ts_1m = ts # fallback if not enough data
-    except Exception:
-        ts_1m = ts
-    df_temp = pd.DataFrame({'lag': ts_1m.shift(1), 'diff': ts_1m.diff()}).dropna()
-    X = sm.add_constant(df_temp['lag'])
-    Y = df_temp['diff']
-    res = sm.OLS(Y, X).fit()
-    if len(res.params) < 2:
-        return np.inf
-    lam = res.params['lag']
-    # If we downsampled to 1m, the lambda is per minute.
-    # Convert half-life back to periods by considering frequency ratio
-    hl_periods = -np.log(2) / lam if lam < 0 else np.inf
-    
-    # Calculate ratio of current interval to the sampled one
-    original_sec = parse_interval_seconds(interval_str)
-    resampled_sec = 60 # 1 minute
-    if isinstance(ts_1m.index.freq, pd.offsets.Minute) or (len(ts_1m) != len(ts)):
-        # We did resample to 1T
-        hl_periods = hl_periods * (resampled_sec / original_sec)
-        
-    return hl_periods
-
-interval_seconds_map = {
-    's': 1,
-    'm': 60,
-    'h': 3600,
-    'd': 86400,
-    'w': 604800,
-    'M': 2592000,
-}
-
-def parse_interval_seconds(interval_str):
-    unit = interval_str[-1]
-    value = int(interval_str[:-1])
-    return value * interval_seconds_map.get(unit, 0)
-
-def format_duration(seconds):
-    if seconds == np.inf:
-        return 'infinite'
-    if seconds >= 3600:
-        return f'{seconds / 3600:.2f} hours'
-    if seconds >= 60:
-        return f'{seconds / 60:.2f} minutes'
-    return f'{seconds:.2f} seconds'
 
 hurst_static = get_hurst_exponent_dynamic(df['Static_Spread'].dropna().values, rolling_window)
 hurst = get_hurst_exponent_dynamic(df['Dynamic_Spread'].dropna().values, rolling_window)
