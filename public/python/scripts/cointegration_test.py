@@ -389,12 +389,13 @@ def optimize_rolling_window(df_in, half_life_periods):
         print(color_text("      -> Half-Life is invalid. Falling back to default window of 800.", YELLOW))
         return 800
 
-    min_window = max(50, int(5 * half_life_periods))
-    max_window = max(100, int(10 * half_life_periods))
+    start_val = max(50, int(1 * half_life_periods))
+    end_val = max(100, int(15 * half_life_periods))
     
-    # We test in steps of 10 or 50 depending on range
-    step = max(10, (max_window - min_window) // 10)
-    candidate_windows = list(range(min_window, max_window + 1, step))
+    # Generate geometric progression (10 steps from 1x to 15x)
+    raw_candidates = np.geomspace(start_val, end_val, num=10)
+    candidate_windows = sorted(list(set([int(round(x)) for x in raw_candidates])))
+    
     print(f"      Candidate Windows: {candidate_windows}")
     
     # Walk-forward split: chronological chunks, train on 70%, test on 30% of each chunk
@@ -410,7 +411,7 @@ def optimize_rolling_window(df_in, half_life_periods):
     
     for c_idx, chunk in enumerate(chunks):
         train_len = int(len(chunk) * 0.7)
-        if train_len < max_window: continue
+        if train_len < end_val: continue
         
         train_df = chunk.iloc[:train_len]
         test_df = chunk.iloc[train_len:]
@@ -494,11 +495,31 @@ def optimize_rolling_window(df_in, half_life_periods):
 if rolling_window == 'auto':
     # Base static OLS calculation for half-life
     print("\n[Prep] Calculating baseline static half-life for optimization...")
-    X_stat = sm.add_constant(df['Feature_Price'])
-    Y_stat = df['Close']
-    base_model = sm.OLS(Y_stat, X_stat).fit()
-    base_spread = base_model.resid
-    base_hl = get_half_life(base_spread, interval)
+    
+    # Configurable chunk duration for baseline half-life calculation
+    baseline_chunk_duration = '3d'
+    chunk_size = parse_interval_seconds(baseline_chunk_duration) // parse_interval_seconds(interval)
+    if chunk_size == 0 or chunk_size > len(df):
+        chunk_size = len(df)
+        
+    local_half_lives = []
+    for i in range(0, len(df), chunk_size):
+        chunk = df.iloc[i:i + chunk_size]
+        if len(chunk) < 100: continue
+        X_stat = sm.add_constant(chunk['Feature_Price'])
+        Y_stat = chunk['Close']
+        base_model = sm.OLS(Y_stat, X_stat).fit()
+        base_spread = base_model.resid
+        hl = get_half_life(base_spread, interval)
+        if not np.isinf(hl) and not np.isnan(hl) and hl > 0:
+            local_half_lives.append(hl)
+
+    if local_half_lives:
+        base_hl = np.median(local_half_lives)
+        print(f"      Calculated median half-life from {len(local_half_lives)} chunks (duration: {baseline_chunk_duration}).")
+    else:
+        base_hl = 800 # fallback
+        print(color_text("      -> Could not compute valid local half-lives. Falling back to default window of 800.", YELLOW))
     
     optimal_window = optimize_rolling_window(df, base_hl)
     rolling_window = optimal_window
