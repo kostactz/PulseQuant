@@ -136,8 +136,13 @@ def run_capture(engine, rows, style, speed, bps, warmup_ticks, chunk_size=1000, 
     if execution_mode == 'immediate':
         if hasattr(engine, 'set_immediate_execution'):
             engine.set_immediate_execution(True)
-        elif hasattr(engine.session, 'immediate_execution'):
+        elif hasattr(engine, 'session') and hasattr(engine.session, 'immediate_execution'):
             engine.session.immediate_execution = True
+    else:
+        if hasattr(engine, 'set_immediate_execution'):
+            engine.set_immediate_execution(False)
+        elif hasattr(engine, 'session') and hasattr(engine.session, 'immediate_execution'):
+            engine.session.immediate_execution = False
     
     total_rows = len(rows)
     print(f"Starting replay. Warmup ticks: {warmup_ticks}")
