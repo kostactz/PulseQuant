@@ -524,9 +524,9 @@ fig_ts.savefig(output_validation_path, dpi=150, bbox_inches='tight')
 plt.close(fig_ts)
 print(f"Saved plot: {output_validation_path}")
 
-fig = plt.figure(figsize=(16, 18))
+fig = plt.figure(figsize=(16, 12))
 
-ax1 = plt.subplot(3, 2, 1)
+ax1 = plt.subplot(2, 2, 1)
 ax1.scatter(df['Feature_Price'], df['Close'], alpha=0.3, color='blue', s=10)
 ax1.plot(df['Feature_Price'], static_model.predict(sm.add_constant(df['Feature_Price'])), color='red', linewidth=2)
 ax1.set_title(f'Price Scatter: {feature_ticker} vs {target_ticker} (OLS Line)')
@@ -534,13 +534,13 @@ ax1.set_xlabel(f'{feature_ticker} Price')
 ax1.set_ylabel(f'{target_ticker} Price')
 ax1.grid(True, alpha=0.3)
 
-ax2 = plt.subplot(3, 2, 2)
+ax2 = plt.subplot(2, 2, 2)
 ax2.plot(df.index, df['Rolling_Beta'], color='purple', linewidth=1.5)
 ax2.set_title('Rolling Hedge Ratio (Beta) Stability')
 ax2.set_ylabel('Beta Value')
 ax2.grid(True, alpha=0.3)
 
-ax3 = plt.subplot(3, 2, 3)
+ax3 = plt.subplot(2, 2, 3)
 ax3.plot(df.index, df['Z_Score'], color='black', linewidth=1)
 ax3.axhline(2.0, color='red', linestyle='--', label='Short Spread (+2 / Overvalued)')
 ax3.axhline(-2.0, color='green', linestyle='--', label='Long Spread (-2 / Undervalued)')
@@ -550,7 +550,7 @@ ax3.set_ylabel('Z-Score')
 ax3.legend(loc='upper right')
 ax3.grid(True, alpha=0.3)
 
-ax4 = plt.subplot(3, 2, 4)
+ax4 = plt.subplot(2, 2, 4)
 ax4.hist(df['Z_Score'], bins=60, density=True, color='skyblue', edgecolor='black', alpha=0.7)
 x_vals = np.linspace(df['Z_Score'].min(), df['Z_Score'].max(), 300)
 normal_pdf = (1.0 / np.sqrt(2 * np.pi)) * np.exp(-0.5 * x_vals**2)
@@ -561,24 +561,30 @@ ax4.set_ylabel('Density')
 ax4.legend(loc='upper right')
 ax4.grid(True, alpha=0.3)
 
-# Calculate spread in basis points (bps) of the target price to assess direct profit margins vs fees
-df['Spread_bps'] = (df['Dynamic_Spread'] / df['Close']) * 10000
-
-ax5 = plt.subplot(3, 2, (5, 6)) # span both columns
-ax5.plot(df.index, df['Spread_bps'], color='teal', linewidth=1)
-# Typical exchange trading fees: ~5 to 10 bps per side (maker/taker)
-ax5.axhline(10.0, color='orange', linestyle='--', label='+10 bps (Typical 0.1% Fee Threshold)')
-ax5.axhline(-10.0, color='orange', linestyle='--')
-ax5.axhline(20.0, color='darkorange', linestyle=':', label='+20 bps (Round-Trip Fee Threshold)')
-ax5.axhline(-20.0, color='darkorange', linestyle=':')
-ax5.set_title('Normalized Spread (in Basis Points) vs Fee Thresholds')
-ax5.set_ylabel('Spread (bps)')
-ax5.set_xlabel('Datetime')
-ax5.legend(loc='upper right')
-ax5.grid(True, alpha=0.3)
-
 plt.tight_layout()
 output_path = 'cointegration_analysis.report.png'
 fig.savefig(output_path, dpi=150, bbox_inches='tight')
 plt.close(fig)
 print(f"Saved plot: {output_path}")
+
+# --- Generate standalone spread chart ---
+df['Spread_bps'] = (df['Dynamic_Spread'] / df['Close']) * 10000
+
+fig_spread = plt.figure(figsize=(16, 4))
+ax_spread = fig_spread.add_subplot(1, 1, 1)
+ax_spread.plot(df.index, df['Spread_bps'], color='teal', linewidth=1)
+ax_spread.axhline(10.0, color='orange', linestyle='--', label='+10 bps (Typical 0.1% Fee Threshold)')
+ax_spread.axhline(-10.0, color='orange', linestyle='--')
+ax_spread.axhline(20.0, color='darkorange', linestyle=':', label='+20 bps (Round-Trip Fee Threshold)')
+ax_spread.axhline(-20.0, color='darkorange', linestyle=':')
+ax_spread.set_title('Normalized Spread (in Basis Points) vs Fee Thresholds')
+ax_spread.set_ylabel('Spread (bps)')
+ax_spread.set_xlabel('Datetime')
+ax_spread.legend(loc='upper right')
+ax_spread.grid(True, alpha=0.3)
+
+fig_spread.tight_layout()
+output_spread_path = 'cointegration_spread_bps.report.png'
+fig_spread.savefig(output_spread_path, dpi=150, bbox_inches='tight')
+plt.close(fig_spread)
+print(f"Saved plot: {output_spread_path}")
