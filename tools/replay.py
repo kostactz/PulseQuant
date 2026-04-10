@@ -118,14 +118,18 @@ def process_intents_and_simulate_fills(engine, intents, row_ts, row, pending_ord
         elif action == 'CANCEL_ORDER':
             if client_order_id in pending_orders:
                 del pending_orders[client_order_id]
-                
-            engine.process_events([{'type': 'EXECUTION_REPORT', 'data': {
+
+            cancel_report = {
                 'clientOrderId': client_order_id,
                 'status': 'CANCELED',
                 'lastFilledQuantity': 0,
                 'lastFilledPrice': 0,
                 'transactionTime': row_ts
-            }}])
+            }
+            cancel_reason = intent.get('reason')
+            if cancel_reason:
+                cancel_report['cancelReason'] = cancel_reason
+            engine.process_events([{'type': 'EXECUTION_REPORT', 'data': cancel_report}])
 
 
 def run_capture(engine, rows, style, speed, bps, warmup_ticks, chunk_size=1000, execution_mode='exchange'):
@@ -211,9 +215,14 @@ def run_capture(engine, rows, style, speed, bps, warmup_ticks, chunk_size=1000, 
         
     if hasattr(engine, 'session'):
         # Derive metrics from engine.session
+        current_capital = getattr(engine.session.portfolio, 'capital', 0.0)
+        # Use value_hist for portfolio_value (capital + open position mark-to-market);
+        # fall back to capital alone when history is unavailable.
+        value_hist = getattr(engine.session, 'value_hist', None)
+        approx_portfolio_value = value_hist[-1] if value_hist and len(value_hist) > 0 else current_capital
         return {
-            'portfolio_value': getattr(engine.session.portfolio, 'capital', 0.0), # Approximate without current price
-            'capital': getattr(engine.session.portfolio, 'initial_capital', 0.0),
+            'portfolio_value': approx_portfolio_value,
+            'capital': current_capital,
             'position': getattr(engine.session.portfolio, 'position', 0.0),
             'max_dd_pct': getattr(engine.session, 'max_dd_pct', 0.0),
             'max_dd_duration': getattr(engine.session, 'max_dd_duration', 0.0),
