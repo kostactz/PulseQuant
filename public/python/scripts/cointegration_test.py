@@ -322,7 +322,11 @@ df['Dynamic_Spread'] = df['Close'] - (df['Rolling_Beta'].shift(1) * df['Feature_
 df['Spread_Mean'] = df['Dynamic_Spread'].rolling(window=rolling_window).mean()
 df['Spread_Std'] = df['Dynamic_Spread'].rolling(window=rolling_window).std()
 df = df.dropna()
-df['Z_Score'] = (df['Dynamic_Spread'] - df['Spread_Mean'].shift(1)) / df['Spread_Std'].shift(1)
+df['Z_Score'] = np.where(
+    df['Spread_Std'].shift(1) < 1e-3, 
+    0.0, 
+    (df['Dynamic_Spread'] - df['Spread_Mean'].shift(1)) / (df['Spread_Std'].shift(1) + 1e-10)
+)
 df = df.dropna()
 
 df['Z_Above'] = df['Z_Score'] > 2.0
@@ -361,15 +365,17 @@ Y = df['Close']
 static_model = sm.OLS(Y, X).fit()
 static_beta = static_model.params['Feature_Price']
 
-df['Static_Spread'] = df['Close'] - (static_beta * df['Feature_Price'])
+# FIX 1: Use the actual model residuals which correctly accounts for the constant
+df['Static_Spread'] = static_model.resid 
 
 print(f"Static Hedge Ratio (Beta): {static_beta:.4f}")
 
 try:
-    adf_result = adfuller(df['Dynamic_Spread'].dropna())
+    # FIX 2: Run ADF on the Static Spread, not the Dynamic Spread
+    adf_result = adfuller(df['Static_Spread'].dropna()) 
     p_value = adf_result[1]
     
-    print(f"ADF Statistic (Dynamic Spread): {adf_result[0]:.4f}")
+    print(f"ADF Statistic (Static Spread): {adf_result[0]:.4f}")
     print(f"ADF P-Value: {p_value:.6f}")
 except ValueError as e:
     print(f"ADF Error: {e}")
@@ -377,9 +383,9 @@ except ValueError as e:
 
 is_cointegrated = p_value < 0.05
 if is_cointegrated:
-    print(color_text(f"-> Conclusion: The dynamic spread IS stationary (Cointegrated). P-Value < 0.05.", GREEN))
+    print(color_text(f"-> Conclusion: The static spread IS stationary (Cointegrated). P-Value < 0.05.", GREEN))
 else:
-    print(color_text(f"-> Conclusion: The dynamic spread is NOT stationary (Not Cointegrated). P-Value >= 0.05.", RED))
+    print(color_text(f"-> Conclusion: The static spread is NOT stationary (Not Cointegrated). P-Value >= 0.05.", RED))
 
 # ==============================================================================
 # 6. ADVANCED METRICS: HURST & HALF-LIFE
@@ -458,62 +464,17 @@ def format_duration(seconds):
         return f'{seconds / 60:.2f} minutes'
     return f'{seconds:.2f} seconds'
 
+hurst_static = get_hurst_exponent_dynamic(df['Static_Spread'].dropna().values, rolling_window)
 hurst = get_hurst_exponent_dynamic(df['Dynamic_Spread'].dropna().values, rolling_window)
 half_life = get_half_life(df['Dynamic_Spread'].dropna(), interval)
 half_life_seconds = half_life * parse_interval_seconds(interval)
 half_life_readable = format_duration(half_life_seconds)
 
-print(f"-> Hurst Exponent: {hurst:.4f} (Target < 0.5 for mean reversion)")
+print(f"-> Hurst Exponent (Static): {hurst_static:.4f} (Target < 0.5 for mean reversion)")
+print(f"-> Hurst Exponent (Dynamic): {hurst:.4f} (Target < 0.5 for mean reversion)")
 print(f"-> Mean Reversion Half-Life: {half_life:.2f} periods (~{half_life_readable})")
 if half_life_seconds > 7200:
     print(color_text("   !!! WARNING: Half-life exceeds 2 hours. Spread may not revert fast enough for medium-frequency strategies.", YELLOW))
-
-# ==============================================================================
-# 6. ROLLING METRICS & SIGNAL GENERATION
-# ==============================================================================
-print("\n[6/7] Calculating Rolling Hedge Ratio (Beta) and Z-Scores...")
-
-roll_cov = df['Close'].rolling(window=rolling_window).cov(df['Feature_Price'])
-roll_var = df['Feature_Price'].rolling(window=rolling_window).var()
-roll_mean_close = df['Close'].rolling(window=rolling_window).mean()
-roll_mean_feature = df['Feature_Price'].rolling(window=rolling_window).mean()
-
-df['Rolling_Beta'] = roll_cov / roll_var
-df['Rolling_Alpha'] = roll_mean_close - (df['Rolling_Beta'] * roll_mean_feature)
-
-df['Dynamic_Spread'] = df['Close'] - (df['Rolling_Beta'].shift(1) * df['Feature_Price']) - df['Rolling_Alpha'].shift(1)
-
-df['Spread_Mean'] = df['Dynamic_Spread'].rolling(window=rolling_window).mean()
-df['Spread_Std'] = df['Dynamic_Spread'].rolling(window=rolling_window).std()
-df = df.dropna()
-df['Z_Score'] = (df['Dynamic_Spread'] - df['Spread_Mean'].shift(1)) / df['Spread_Std'].shift(1)
-df = df.dropna()
-
-df['Z_Above'] = df['Z_Score'] > 2.0
-df['Z_Below'] = df['Z_Score'] < -2.0
-
-prev_above = df['Z_Above'].shift(1, fill_value=False)
-prev_below = df['Z_Below'].shift(1, fill_value=False)
-
-df['Signal_Above_Cross'] = df['Z_Above'] & (~prev_above)
-df['Signal_Below_Cross'] = df['Z_Below'] & (~prev_below)
-
-bullish_signals = int(df['Signal_Below_Cross'].sum())
-bearish_signals = int(df['Signal_Above_Cross'].sum())
-raw_exceedance_count = int(df['Z_Above'].sum() + df['Z_Below'].sum())
-raw_exceedance_pct = raw_exceedance_count / len(df) if len(df) > 0 else 0.0
-
-print(f"Identified {bullish_signals} bullish signals and {bearish_signals} bearish signals based.")
-print(f"       Total raw exceedances outside ±2σ: {raw_exceedance_count} rows ({raw_exceedance_pct:.2%}), including persistence of the same signal.")
-
-signal_count = bullish_signals + bearish_signals
-signal_pct = signal_count / len(df) if len(df) > 0 else 0.0
-if raw_exceedance_pct > 0.045:
-    print(color_text("   !!! WARNING: The Z-score exceedance rate is unusually high.", YELLOW))
-    print(color_text(f"       {raw_exceedance_count} out of {len(df)} points ({raw_exceedance_pct:.2%}) exceed ±2σ.", YELLOW))
-    print(color_text("       In a normal distribution, ±2σ events should occur only about 4.5% of the time.", YELLOW))
-    print(color_text("       This strongly suggests the spread distribution has extremely fat tails, or more likely, the rolling window for Z-score calculation is too short.", YELLOW))
-
 
 # ==============================================================================
 # 7. FINAL VERDICT & VISUALIZATION
@@ -522,7 +483,7 @@ print("\n[7/7] Final Verdict for Medium-Frequency Trading:")
 
 signal_warning = raw_exceedance_pct > 0.045
 half_life_warning = half_life_seconds > 7200
-mean_reversion_warning = hurst >= 0.4
+mean_reversion_warning = hurst_static >= 0.4
 cointegration_warning = not is_cointegrated
 lead_lag_warning = best_lag > 1
 
@@ -531,7 +492,7 @@ if not is_cointegrated:
 elif lead_lag_warning:
     print(color_text(f"VERDICT: NO. {target_ticker} leads {feature_ticker} (lag = {best_lag}). The feature asset is not useful for predicting the target.", RED))
 elif mean_reversion_warning:
-    print(color_text(f"VERDICT: NO. Hurst exponent is {hurst:.4f} (close or greater than 0.5), indicating the spread is not reliably mean-reverting.", RED))
+    print(color_text(f"VERDICT: NO. Hurst exponent (Static) is {hurst_static:.4f} (close or greater than 0.5), indicating the spread is not reliably mean-reverting.", RED))
     if p_value < 0.05:
         print(color_text(
             f"       The fact that the ADF p-value is {p_value:.3f} shows that while the spread does eventually revert,"
@@ -563,9 +524,9 @@ fig_ts.savefig(output_validation_path, dpi=150, bbox_inches='tight')
 plt.close(fig_ts)
 print(f"Saved plot: {output_validation_path}")
 
-fig = plt.figure(figsize=(16, 12))
+fig = plt.figure(figsize=(16, 18))
 
-ax1 = plt.subplot(2, 2, 1)
+ax1 = plt.subplot(3, 2, 1)
 ax1.scatter(df['Feature_Price'], df['Close'], alpha=0.3, color='blue', s=10)
 ax1.plot(df['Feature_Price'], static_model.predict(sm.add_constant(df['Feature_Price'])), color='red', linewidth=2)
 ax1.set_title(f'Price Scatter: {feature_ticker} vs {target_ticker} (OLS Line)')
@@ -573,13 +534,13 @@ ax1.set_xlabel(f'{feature_ticker} Price')
 ax1.set_ylabel(f'{target_ticker} Price')
 ax1.grid(True, alpha=0.3)
 
-ax2 = plt.subplot(2, 2, 2)
+ax2 = plt.subplot(3, 2, 2)
 ax2.plot(df.index, df['Rolling_Beta'], color='purple', linewidth=1.5)
 ax2.set_title('Rolling Hedge Ratio (Beta) Stability')
 ax2.set_ylabel('Beta Value')
 ax2.grid(True, alpha=0.3)
 
-ax3 = plt.subplot(2, 2, 3)
+ax3 = plt.subplot(3, 2, 3)
 ax3.plot(df.index, df['Z_Score'], color='black', linewidth=1)
 ax3.axhline(2.0, color='red', linestyle='--', label='Short Spread (+2 / Overvalued)')
 ax3.axhline(-2.0, color='green', linestyle='--', label='Long Spread (-2 / Undervalued)')
@@ -589,7 +550,7 @@ ax3.set_ylabel('Z-Score')
 ax3.legend(loc='upper right')
 ax3.grid(True, alpha=0.3)
 
-ax4 = plt.subplot(2, 2, 4)
+ax4 = plt.subplot(3, 2, 4)
 ax4.hist(df['Z_Score'], bins=60, density=True, color='skyblue', edgecolor='black', alpha=0.7)
 x_vals = np.linspace(df['Z_Score'].min(), df['Z_Score'].max(), 300)
 normal_pdf = (1.0 / np.sqrt(2 * np.pi)) * np.exp(-0.5 * x_vals**2)
@@ -599,6 +560,22 @@ ax4.set_xlabel('Z-Score')
 ax4.set_ylabel('Density')
 ax4.legend(loc='upper right')
 ax4.grid(True, alpha=0.3)
+
+# Calculate spread in basis points (bps) of the target price to assess direct profit margins vs fees
+df['Spread_bps'] = (df['Dynamic_Spread'] / df['Close']) * 10000
+
+ax5 = plt.subplot(3, 2, (5, 6)) # span both columns
+ax5.plot(df.index, df['Spread_bps'], color='teal', linewidth=1)
+# Typical exchange trading fees: ~5 to 10 bps per side (maker/taker)
+ax5.axhline(10.0, color='orange', linestyle='--', label='+10 bps (Typical 0.1% Fee Threshold)')
+ax5.axhline(-10.0, color='orange', linestyle='--')
+ax5.axhline(20.0, color='darkorange', linestyle=':', label='+20 bps (Round-Trip Fee Threshold)')
+ax5.axhline(-20.0, color='darkorange', linestyle=':')
+ax5.set_title('Normalized Spread (in Basis Points) vs Fee Thresholds')
+ax5.set_ylabel('Spread (bps)')
+ax5.set_xlabel('Datetime')
+ax5.legend(loc='upper right')
+ax5.grid(True, alpha=0.3)
 
 plt.tight_layout()
 output_path = 'cointegration_analysis.report.png'
