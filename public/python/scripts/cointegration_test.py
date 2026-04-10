@@ -51,7 +51,7 @@ import sys
 import datetime
 from binance.client import Client
 import statsmodels.api as sm
-from statsmodels.tsa.stattools import adfuller
+from statsmodels.tsa.stattools import adfuller, coint
 from statsmodels.regression.rolling import RollingOLS
 import matplotlib
 matplotlib.use('Agg')
@@ -294,39 +294,40 @@ print(f"Highest correlation ({best_corr:.4f}) found at lag: {best_lag}")
 # If lag < 0, t_slice is later, f_slice is earlier. e.g. T[1] and F[0]. Feature predicts Target. We want this!
 if best_lag < 0:
     abs_lag = abs(best_lag)
-    print(color_text(f"-> Conclusion: {feature_ticker} LEADS {target_ticker} by {abs_lag} periods. (Highly useful)", GREEN))
-    print(f"   Aligning data: Shifting Feature forward by {abs_lag} periods to prevent lookahead bias.")
-    df['Feature_Price'] = df['Feature_Price'].shift(abs_lag)
-    df = df.dropna()
+    print(color_text(f"-> Conclusion: {feature_ticker} LEADS {target_ticker} by {abs_lag} periods.", GREEN))
+    print("   Maintaining concurrent alignment for strict stat-arb execution.")
+    # REMOVED: df['Feature_Price'] = df['Feature_Price'].shift(abs_lag)
 elif best_lag > 0:
-    print(color_text(f"-> Conclusion: {target_ticker} LEADS {feature_ticker} by {best_lag} periods. ({feature_ticker} is likely useless for predicting {target_ticker})", RED))
+    print(color_text(f"-> Conclusion: {target_ticker} LEADS {feature_ticker} by {best_lag} periods. ({feature_ticker} is likely useless).", RED))
 else:
-    print(color_text(f"-> Conclusion: Both assets move synchronously. (Useful for mean reversion, but latency execution is tough)", YELLOW))
+    print(color_text(f"-> Conclusion: Both assets move synchronously.", YELLOW))
 
 
 # ==============================================================================
 # 4. ROLLING METRICS & SIGNAL GENERATION
 # ==============================================================================
-print("\n[4/7] Calculating Rolling Hedge Ratio (Beta) and Z-Scores...")
+print("\n[4/7] Calculating EWM Hedge Ratio (Beta) and Z-Scores...")
 
-roll_cov = df['Close'].rolling(window=rolling_window).cov(df['Feature_Price'])
-roll_var = df['Feature_Price'].rolling(window=rolling_window).var()
-roll_mean_close = df['Close'].rolling(window=rolling_window).mean()
-roll_mean_feature = df['Feature_Price'].rolling(window=rolling_window).mean()
+# Use EWM to prevent "ghost effects" from unweighted rolling windows dropping outliers
+df['EWM_Cov'] = df['Close'].ewm(span=rolling_window).cov(df['Feature_Price'])
+df['EWM_Var'] = df['Feature_Price'].ewm(span=rolling_window).var()
+df['EWM_Mean_Close'] = df['Close'].ewm(span=rolling_window).mean()
+df['EWM_Mean_Feature'] = df['Feature_Price'].ewm(span=rolling_window).mean()
 
-df['Rolling_Beta'] = roll_cov / roll_var
-df['Rolling_Alpha'] = roll_mean_close - (df['Rolling_Beta'] * roll_mean_feature)
+# Calculate Beta and Alpha
+df['Rolling_Beta'] = df['EWM_Cov'] / df['EWM_Var']
+df['Rolling_Alpha'] = df['EWM_Mean_Close'] - (df['Rolling_Beta'] * df['EWM_Mean_Feature'])
 
+# Calculate the strictly out-of-sample spread
+# What is the spread TODAY using YESTERDAY's hedge ratio?
 df['Dynamic_Spread'] = df['Close'] - (df['Rolling_Beta'].shift(1) * df['Feature_Price']) - df['Rolling_Alpha'].shift(1)
 
+# Standardize the spread concurrently
 df['Spread_Mean'] = df['Dynamic_Spread'].rolling(window=rolling_window).mean()
 df['Spread_Std'] = df['Dynamic_Spread'].rolling(window=rolling_window).std()
-df = df.dropna()
-df['Z_Score'] = np.where(
-    df['Spread_Std'].shift(1) < 1e-3, 
-    0.0, 
-    (df['Dynamic_Spread'] - df['Spread_Mean'].shift(1)) / (df['Spread_Std'].shift(1) + 1e-10)
-)
+
+# Z-Score: We add a tiny epsilon to prevent division by zero
+df['Z_Score'] = (df['Dynamic_Spread'] - df['Spread_Mean']) / (df['Spread_Std'] + 1e-10)
 df = df.dropna()
 
 df['Z_Above'] = df['Z_Score'] > 2.0
@@ -360,32 +361,36 @@ if raw_exceedance_pct > 0.045:
 # ==============================================================================
 print("\n[5/7] Calculating Static Hedge Ratio and Testing Cointegration...")
 
+# Calculate static beta for visualization/baseline purposes
 X = sm.add_constant(df['Feature_Price'])
 Y = df['Close']
 static_model = sm.OLS(Y, X).fit()
 static_beta = static_model.params['Feature_Price']
-
-# FIX 1: Use the actual model residuals which correctly accounts for the constant
 df['Static_Spread'] = static_model.resid 
 
 print(f"Static Hedge Ratio (Beta): {static_beta:.4f}")
 
 try:
-    # FIX 2: Run ADF on the Static Spread, not the Dynamic Spread
-    adf_result = adfuller(df['Static_Spread'].dropna()) 
-    p_value = adf_result[1]
+    print("      -> Downsampling data for cointegration test to improve performance...")
+    # Cointegration is a long-term property. Downsampling to 15-minute intervals drastically speeds up 
+    # the ADF lag-search built into the test without losing the macro-equilibrium relationship.
+    coint_df = df[['Close', 'Feature_Price']].resample('15min').last().dropna() if len(df) > 10000 else df
     
-    print(f"ADF Statistic (Static Spread): {adf_result[0]:.4f}")
-    print(f"ADF P-Value: {p_value:.6f}")
-except ValueError as e:
-    print(f"ADF Error: {e}")
+    # Use the proper Engle-Granger cointegration test on the downsampled concurrent price series
+    coint_score, p_value, critical_values = coint(coint_df['Close'], coint_df['Feature_Price'])
+    
+    print(f"Engle-Granger T-Statistic: {coint_score:.4f}")
+    print(f"MacKinnon P-Value: {p_value:.6f}")
+    print(f"Critical Values (1%, 5%, 10%): {critical_values}")
+except Exception as e:
+    print(f"Cointegration Test Error: {e}")
     p_value = 1.0
 
 is_cointegrated = p_value < 0.05
 if is_cointegrated:
-    print(color_text(f"-> Conclusion: The static spread IS stationary (Cointegrated). P-Value < 0.05.", GREEN))
+    print(color_text(f"-> Conclusion: The pair IS cointegrated (P-Value < 0.05).", GREEN))
 else:
-    print(color_text(f"-> Conclusion: The static spread is NOT stationary (Not Cointegrated). P-Value >= 0.05.", RED))
+    print(color_text(f"-> Conclusion: The pair is NOT cointegrated (P-Value >= 0.05).", RED))
 
 # ==============================================================================
 # 6. ADVANCED METRICS: HURST & HALF-LIFE
@@ -483,14 +488,16 @@ print("\n[7/7] Final Verdict for Medium-Frequency Trading:")
 
 signal_warning = raw_exceedance_pct > 0.045
 half_life_warning = half_life_seconds > 7200
-mean_reversion_warning = hurst_static >= 0.4
+mean_reversion_warning = hurst_static >= 0.5 # Adjusted to standard 0.5 threshold
 cointegration_warning = not is_cointegrated
-lead_lag_warning = best_lag > 1
+
+# FIX: If best_lag is >= 0, the feature does not lead. It is useless for anticipation.
+lead_lag_warning = best_lag >= 0 
 
 if not is_cointegrated:
-    print(color_text(f"VERDICT: NO. Cointegration is weak or absent (ADF p-value = {p_value:.6f}). Spread is unlikely to be stationary.", RED))
+    print(color_text(f"VERDICT: NO. Cointegration is weak or absent (Engle-Granger p-value = {p_value:.6f}).", RED))
 elif lead_lag_warning:
-    print(color_text(f"VERDICT: NO. {target_ticker} leads {feature_ticker} (lag = {best_lag}). The feature asset is not useful for predicting the target.", RED))
+    print(color_text(f"VERDICT: NO. {feature_ticker} does not lead {target_ticker} (lag = {best_lag}). No predictive edge.", RED))
 elif mean_reversion_warning:
     print(color_text(f"VERDICT: NO. Hurst exponent (Static) is {hurst_static:.4f} (close or greater than 0.5), indicating the spread is not reliably mean-reverting.", RED))
     if p_value < 0.05:
