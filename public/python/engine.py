@@ -1142,7 +1142,7 @@ def handle_tick(row, ts):
                         qty=qty_to_trade,
                         price=execute_price,
                         timestamp=ts,
-                        order_type=order_type,
+                        order_type='taker',
                         indicators=ind.copy(),
                         reason=reason_text,
                         client_order_id=None

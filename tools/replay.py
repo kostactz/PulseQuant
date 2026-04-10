@@ -58,7 +58,41 @@ def import_engine(path='public/python/engine.py'):
     return mod
 
 
-def process_intents_and_simulate_fills(engine, intents, row_ts, row):
+def simulate_fills(engine, batch, pending_orders):
+    for event in batch:
+        if event.get('type') == 'TICK':
+            row = event.get('data', {})
+            row_ts = row.get('timestamp', int(time.time() * 1000))
+            filled_ids = []
+            
+            for client_order_id, order in pending_orders.items():
+                side = order['side']
+                price = order['price']
+                qty = order['qty']
+                
+                filled = False
+                if side == 'BUY':
+                    if not price or price == 0 or price >= row.get('ask', 0.0):
+                        filled = True
+                elif side == 'SELL':
+                    if not price or price == 0 or price <= row.get('bid', 0.0):
+                        filled = True
+                        
+                if filled:
+                    fill_price = price if price and price > 0 else (row.get('ask', 0.0) if side == 'BUY' else row.get('bid', 0.0))
+                    engine.process_events([{'type': 'EXECUTION_REPORT', 'data': {
+                        'clientOrderId': client_order_id,
+                        'status': 'FILLED',
+                        'lastFilledQuantity': qty,
+                        'lastFilledPrice': fill_price,
+                        'transactionTime': row_ts
+                    }}])
+                    filled_ids.append(client_order_id)
+                    
+            for cid in filled_ids:
+                del pending_orders[cid]
+
+def process_intents_and_simulate_fills(engine, intents, row_ts, row, pending_orders):
     for intent in intents:
         action = intent.get('action')
         client_order_id = intent.get('clientOrderId') or intent.get('client_order_id')
@@ -70,27 +104,21 @@ def process_intents_and_simulate_fills(engine, intents, row_ts, row):
             price = intent.get('price')
             side = intent.get('side', '').upper()
 
-            if not price or price == 0:
-                price = row.get('ask', 0.0) if side == 'BUY' else row.get('bid', 0.0)
-
             engine.process_events([{'type': 'EXECUTION_REPORT', 'data': {
                 'clientOrderId': client_order_id,
                 'status': 'NEW',
                 'lastFilledQuantity': 0,
-                'lastFilledPrice': price,
+                'lastFilledPrice': price or 0,
                 'transactionTime': row_ts
             }}])
 
             if qty > 0:
-                engine.process_events([{'type': 'EXECUTION_REPORT', 'data': {
-                    'clientOrderId': client_order_id,
-                    'status': 'FILLED',
-                    'lastFilledQuantity': qty,
-                    'lastFilledPrice': price,
-                    'transactionTime': row_ts
-                }}])
+                pending_orders[client_order_id] = {'qty': qty, 'price': price, 'side': side}
 
         elif action == 'CANCEL_ORDER':
+            if client_order_id in pending_orders:
+                del pending_orders[client_order_id]
+                
             engine.process_events([{'type': 'EXECUTION_REPORT', 'data': {
                 'clientOrderId': client_order_id,
                 'status': 'CANCELED',
@@ -118,16 +146,23 @@ def run_capture(engine, rows, style, speed, bps, warmup_ticks, chunk_size=1000, 
     
     engine.set_auto_trade(False)
     
+    pending_orders = {}
+    
     def process_tick_batch(batch):
         if not batch:
             return None
+
+        # Check fills before running the engine
+        if execution_mode == 'exchange' and pending_orders:
+            simulate_fills(engine, batch, pending_orders)
 
         result = engine.process_events(batch)
         if result and result.get('intents'):
             last_event = batch[-1]
             row = last_event.get('data', last_event) if isinstance(last_event, dict) else last_event
             row_ts = row.get('timestamp', int(time.time() * 1000))
-            process_intents_and_simulate_fills(engine, result['intents'], row_ts, row)
+            if execution_mode == 'exchange':
+                process_intents_and_simulate_fills(engine, result['intents'], row_ts, row, pending_orders)
         return result
 
     for i in range(0, total_rows, chunk_size):
@@ -162,7 +197,34 @@ def run_capture(engine, rows, style, speed, bps, warmup_ticks, chunk_size=1000, 
     print(f"Replay finished in {elapsed:.2f} seconds ({total_rows / elapsed:.0f} ticks/sec).")
     
     # Get final snapshot metrics (engine.process_events([]) only returns logs/intents)
-    return engine.get_metrics()
+    if hasattr(engine, 'get_metrics'):
+        return engine.get_metrics()
+    
+    # Fallback for alternative/old engines
+    if hasattr(engine, 'process_data'):
+        return engine.process_data([])
+        
+    if hasattr(engine, 'session'):
+        # Derive metrics from engine.session
+        return {
+            'portfolio_value': getattr(engine.session.portfolio, 'capital', 0.0), # Approximate without current price
+            'capital': getattr(engine.session.portfolio, 'initial_capital', 0.0),
+            'position': getattr(engine.session.portfolio, 'position', 0.0),
+            'max_dd_pct': getattr(engine.session, 'max_dd_pct', 0.0),
+            'max_dd_duration': getattr(engine.session, 'max_dd_duration', 0.0),
+            'analytics': getattr(engine.session.portfolio, 'get_trade_analytics', lambda: {
+                'total_trades': 0, 'hit_ratio': 0.0, 'profit_factor': 0.0,
+                'win_loss_ratio': 0.0, 'avg_holding_time': 0.0, 'maker_fill_rate': 0.0
+            })(),
+            'pending_order_count': len(getattr(engine.session, 'pending_orders', [])),
+            'canceled_orders_total': getattr(engine.session, 'canceled_orders_total', 0),
+            'cancellation_rate': 0.0,
+            'recent_trades_full': [],
+            'recent_cancellations': []
+        }
+    
+    # Keep the previous process_events([]) behavior as a last resort
+    return engine.process_events([])
 
 def print_metrics(snapshot):
     print("\n" + "="*50)
@@ -219,7 +281,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="PulseQuant Headless Engine Replay")
     parser.add_argument('--input', '-i', required=True, help="Path to the .jsonl or .jsonl.gz capture file")
     parser.add_argument('--engine', '-e', default='public/python/engine.py', help="Path to engine.py")
-    parser.add_argument('--execution-mode', default='exchange', choices=['exchange', 'immediate'], help="Execution mode: exchange lifecycle or immediate dictionary" )
+    parser.add_argument('--execution-mode', default='exchange', choices=['exchange', 'immediate'], help="Execution mode: exchange lifecycle or immediate execution")
     parser.add_argument('--style', default='moderate', choices=['conservative', 'moderate', 'aggressive'], help="Trading style")
     parser.add_argument('--speed', default='normal', choices=['slow', 'normal', 'fast'], help="Signal speed")
     parser.add_argument('--bps', type=int, default=100, help="Trade size in basis points (bps)")
