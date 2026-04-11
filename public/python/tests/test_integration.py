@@ -105,29 +105,30 @@ def test_immediate_execution_mode():
     set_immediate_execution(True)
     update_strategy('aggressive', 'fast')
 
-    data = _make_crossover_tick_data()
-    result = process_events(data)
+    try:
+        data = _make_crossover_tick_data()
+        result = process_events(data)
 
-    # No PLACE_ORDER intents should be generated in immediate mode
-    intents = result.get('intents', [])
-    place_order_intents = [i for i in intents if i.get('action') == 'PLACE_ORDER']
-    assert place_order_intents == [], (
-        f"Expected no PLACE_ORDER intents in immediate mode, got: {place_order_intents}"
-    )
+        # No PLACE_ORDER intents should be generated in immediate mode
+        intents = result.get('intents', [])
+        place_order_intents = [i for i in intents if i.get('action') == 'PLACE_ORDER']
+        assert place_order_intents == [], (
+            f"Expected no PLACE_ORDER intents in immediate mode, got: {place_order_intents}"
+        )
 
-    # No orders should be sitting in the pending queue
-    assert len(session.pending_orders) == 0, (
-        f"Expected empty pending_orders in immediate mode, got {len(session.pending_orders)} orders"
-    )
+        # No orders should be sitting in the pending queue
+        assert len(session.pending_orders) == 0, (
+            f"Expected empty pending_orders in immediate mode, got {len(session.pending_orders)} orders"
+        )
 
-    # Trades should have been executed directly into the portfolio
-    metrics = get_metrics()
-    assert metrics['portfolio_value'] > 0
-    trade_count = metrics.get('analytics', {}).get('total_trades', 0)
-    assert trade_count > 0 or metrics.get('position', 0) != 0, (
-        "Expected at least one trade to be executed immediately into the portfolio"
-    )
-
-    # Cleanup and ensure flag is reset so it doesn't pollute other tests
-    set_immediate_execution(False)
-    clear_data()
+        # Trades should have been executed directly into the portfolio
+        metrics = get_metrics()
+        assert metrics['portfolio_value'] > 0
+        trade_count = metrics.get('analytics', {}).get('total_trades', 0)
+        assert trade_count > 0 or metrics.get('position', 0) != 0, (
+            "Expected at least one trade to be executed immediately into the portfolio"
+        )
+    finally:
+        # Cleanup and ensure flag is reset so it doesn't pollute other tests
+        set_immediate_execution(False)
+        clear_data()
