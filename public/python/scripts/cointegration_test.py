@@ -53,6 +53,7 @@ from binance.client import Client
 import statsmodels.api as sm
 from statsmodels.tsa.stattools import adfuller, coint
 from statsmodels.regression.rolling import RollingOLS
+from scipy.stats import norm
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -81,6 +82,7 @@ parser.add_argument('--interval', default='1s', help='Binance klines interval.')
 parser.add_argument('--start-time', default='2026-01-22T00:00:00', help='Start timestamp in ISO format.')
 parser.add_argument('--end-time', default='2026-01-26T00:00:00', help='End timestamp in ISO format.')
 parser.add_argument('--rolling-window', default='800', help='Rolling window size used for rolling beta and z-score calculations. Can be "auto".')
+parser.add_argument('--sigma-threshold', default='2.0', help='Z-score threshold for trade entry. Can be a float (e.g., 2.5) or "auto".')
 parser.add_argument('--rolling-window-only', action='store_true', help='Only calculate the optimal rolling window and exit.')
 parser.add_argument('--verbose', action='store_true', help='Show verbose progress updates during data fetching.')
 parser.add_argument('--backtest', action='store_true', help='Run an analytical performance backtest accounting for fees.')
@@ -101,6 +103,12 @@ if args.rolling_window.lower() == 'auto':
     rolling_window = 'auto'
 else:
     rolling_window = int(args.rolling_window)
+
+if args.sigma_threshold.lower() == 'auto':
+    sigma_threshold = 'auto'
+else:
+    sigma_threshold = float(args.sigma_threshold)
+
 rolling_window_only = args.rolling_window_only
 
 # Rolling window for intervals, incl. z-score.
@@ -432,28 +440,35 @@ def calculate_rolling_metrics(df_in, window_size):
     df_calc['Z_Score'] = (df_calc['Dynamic_Spread'] - df_calc['Spread_Mean']) / (df_calc['Spread_Std'] + 1e-10)
     return df_calc
 
-def optimize_rolling_window(df_in, half_life_periods):
-    print(f"\n[Opt] Starting Walk-Forward Optimization for Rolling Window...")
+def optimize_parameters(df_in, half_life_periods):
+    print(f"\n[Opt] Starting Walk-Forward Optimization for Rolling Window & Sigma Threshold...")
     print(f"      Baseline Half-Life: {half_life_periods:.2f} periods")
     
     if np.isinf(half_life_periods) or np.isnan(half_life_periods):
         print(color_text("      -> Half-Life is invalid. Falling back to default window of 800.", YELLOW))
-        return 800
+        half_life_periods = 800
 
-    start_val = max(50, int(1 * half_life_periods))
-    end_val = max(100, int(20 * half_life_periods))
-    
-    # Generate geometric progression (10 steps from 1x to 15x)
-    raw_candidates = np.geomspace(start_val, end_val, num=10)
-    candidate_windows = sorted(list(set([int(round(x)) for x in raw_candidates])))
+    if args.rolling_window.lower() == 'auto':
+        start_val = max(50, int(1 * half_life_periods))
+        end_val = max(100, int(20 * half_life_periods))
+        raw_candidates = np.geomspace(start_val, end_val, num=10)
+        candidate_windows = sorted(list(set([int(round(x)) for x in raw_candidates])))
+    else:
+        candidate_windows = [int(args.rolling_window)]
+        
+    if args.sigma_threshold.lower() == 'auto':
+        candidate_thresholds = list(np.arange(1.5, 6.5, 0.5))
+    else:
+        candidate_thresholds = [float(args.sigma_threshold)]
     
     print(f"      Candidate Windows: {candidate_windows}")
+    print(f"      Candidate Thresholds: {candidate_thresholds}")
     
     # Walk-forward split: chronological chunks, train on 70%, test on 30% of each chunk
     chunk_size = int(parse_interval_seconds('8h') / parse_interval_seconds(interval)) # ~8 hours
     
-    # Ensure chunk_size allows at least the largest training window plus some testing data
-    min_required_chunk = int(end_val / 0.7) + 500
+    end_val_max = max(candidate_windows)
+    min_required_chunk = int(end_val_max / 0.7) + 500
     if chunk_size < min_required_chunk:
         chunk_size = min_required_chunk
         
@@ -466,110 +481,111 @@ def optimize_rolling_window(df_in, half_life_periods):
     if len(chunks) > 1 and len(chunks[-1]) < 0.2 * chunk_size:
         chunks.pop() # Drop extremely small last chunk
     
-    scores = {w: {'returns': [], 'mdd': [], 'pvalue': []} for w in candidate_windows}
+    scores = {(w, t): {'returns': [], 'mdd': [], 'pvalue': []} for w in candidate_windows for t in candidate_thresholds}
+    taker_pct = args.taker_fee / 100.0
     
     for w in candidate_windows:
         if getattr(args, 'verbose', False):
             print(f"         [Verbose] Evaluating Window {w} across full dataset...")
             
-        # 1. Global calculation prevents state-reset fragmentation
         full_calc = calculate_rolling_metrics(df_in, w)
         
-        all_spread_returns = []
-        all_mdds = []
-        all_pvals = []
-        
-        for c_idx, chunk in enumerate(chunks):
-            train_len = int(len(chunk) * 0.7)
-            if train_len < end_val: continue
+        for thr in candidate_thresholds:
+            all_spread_returns = []
+            all_mdds = []
+            all_pvals = []
             
-            # Slice the global DataFrame metrics for this chunk's testing period
-            # Ensure indices align safely
-            chunk_test_start = chunk.index[train_len]
-            chunk_test_end = chunk.index[-1]
-            test_calc = full_calc.loc[chunk_test_start:chunk_test_end].copy().dropna(subset=['Z_Score'])
-            
-            if len(test_calc) < 10: continue
-            
-            z = test_calc['Z_Score'].values
-            pos = 0
-            features = test_calc['Feature_Price'].values
-            targets = test_calc['Close'].values
-            betas = test_calc['Rolling_Beta'].shift(1).fillna(0).values
-            
-            spread_returns = np.zeros(len(test_calc))
-            for i in range(1, len(test_calc)):
-                # 3. Simple Returns correctly mapped to Price-Beta Cointegration
-                target_diff = targets[i] - targets[i-1]
-                feature_diff = features[i] - features[i-1]
-                total_capital = targets[i-1] + abs(betas[i]) * features[i-1]
-                spread_return = (target_diff - betas[i] * feature_diff) / total_capital if total_capital > 0 else 0.0
+            for c_idx, chunk in enumerate(chunks):
+                train_len = int(len(chunk) * 0.7)
+                if train_len < end_val_max: continue
                 
-                # Z-score simple mean reversion (zero-latency execution)
-                if z[i-1] < -2.0: pos = 1
-                elif z[i-1] > 2.0: pos = -1
-                elif pos == 1 and z[i-1] >= 0: pos = 0
-                elif pos == -1 and z[i-1] <= 0: pos = 0
-
-                spread_returns[i] = pos * spread_return
+                chunk_test_start = chunk.index[train_len]
+                chunk_test_end = chunk.index[-1]
+                test_calc = full_calc.loc[chunk_test_start:chunk_test_end].copy().dropna(subset=['Z_Score'])
                 
-            all_spread_returns.extend(spread_returns)
-            
-            cum_returns = np.cumsum(spread_returns)
-            peak = np.maximum.accumulate(cum_returns)
-            drawdown = peak - cum_returns
-            all_mdds.append(np.max(drawdown))
-            
-            try:
-                pval = coint(test_calc['Close'], test_calc['Feature_Price'])[1]
-            except Exception:
-                pval = 1.0
-            all_pvals.append(pval)
+                if len(test_calc) < 10: continue
+                
+                z = test_calc['Z_Score'].values
+                pos = 0
+                features = test_calc['Feature_Price'].values
+                targets = test_calc['Close'].values
+                betas = test_calc['Rolling_Beta'].shift(1).fillna(0).values
+                
+                spread_returns = np.zeros(len(test_calc))
+                for i in range(1, len(test_calc)):
+                    target_diff = targets[i] - targets[i-1]
+                    feature_diff = features[i] - features[i-1]
+                    total_capital = targets[i-1] + abs(betas[i]) * features[i-1]
+                    gross_spread_return = (target_diff - betas[i] * feature_diff) / total_capital if total_capital > 0 else 0.0
+                    
+                    prev_pos = pos
 
-        if len(all_spread_returns) > 0:
-            returns_arr = np.array(all_spread_returns)
-            sr_mean = np.mean(returns_arr)
-            sr_std = np.std(returns_arr) + 1e-10
-            # 4. Use 365 days for crypto
-            sharpe = (sr_mean / sr_std) * np.sqrt(365 * 86400 / parse_interval_seconds(interval))
-            
-            scores[w]['returns'] = returns_arr
-            scores[w]['sharpe'] = sharpe
-            scores[w]['mdd'] = np.mean(all_mdds) if all_mdds else 0
-            scores[w]['pvalue'] = np.mean(all_pvals) if all_pvals else 1.0
+                    if pos == 0:
+                        if z[i-1] < -thr: pos = 1
+                        elif z[i-1] > thr: pos = -1
+                    elif pos == 1 and z[i-1] >= 0: pos = 0
+                    elif pos == -1 and z[i-1] <= 0: pos = 0
+                    
+                    turnover = abs(pos - prev_pos)
+                    fee = turnover * taker_pct
+                    spread_returns[i] = (prev_pos * gross_spread_return) - fee
+                    
+                all_spread_returns.extend(spread_returns)
+                
+                cum_returns = np.cumsum(spread_returns)
+                peak = np.maximum.accumulate(cum_returns)
+                drawdown = peak - cum_returns
+                all_mdds.append(np.max(drawdown))
+                
+                try:
+                    pval = coint(test_calc['Close'], test_calc['Feature_Price'])[1]
+                except Exception:
+                    pval = 1.0
+                all_pvals.append(pval)
+
+            if len(all_spread_returns) > 0:
+                returns_arr = np.array(all_spread_returns)
+                sr_mean = np.mean(returns_arr)
+                sr_std = np.std(returns_arr) + 1e-10
+                sharpe = (sr_mean / sr_std) * np.sqrt(365 * 86400 / parse_interval_seconds(interval))
+                
+                scores[(w, thr)]['returns'] = returns_arr
+                scores[(w, thr)]['sharpe'] = sharpe
+                scores[(w, thr)]['mdd'] = np.mean(all_mdds) if all_mdds else 0
+                scores[(w, thr)]['pvalue'] = np.mean(all_pvals) if all_pvals else 1.0
 
     best_score = -np.inf
     best_w = candidate_windows[0]
+    best_thr = candidate_thresholds[0]
     
     print("\n      Optimization Results Summary:")
-    for w in candidate_windows:
-        if 'sharpe' not in scores[w]: continue
+    for (w, thr) in scores:
+        if 'sharpe' not in scores[(w, thr)]: continue
         
-        avg_sharpe = scores[w]['sharpe']
-        avg_mdd = scores[w]['mdd']
-        avg_pval = scores[w]['pvalue']
+        avg_sharpe = scores[(w, thr)]['sharpe']
+        avg_mdd = scores[(w, thr)]['mdd']
+        avg_pval = scores[(w, thr)]['pvalue']
         
-        # Penalize non-stationary windows
         penalty = 1.0
         if avg_pval > 0.05:
             penalty = 0.5
         
-        # Basic fitness score (Sharpe - Penalty for Drawdown)
         score = (avg_sharpe - avg_mdd * 10) * penalty
         
-        print(f"      Window {w:4d}: Sharpe={avg_sharpe:6.2f}, MaxDD={avg_mdd:6.4f}, ADF P-Val={avg_pval:6.4f}, Score={score:6.2f}")
+        print(f"      Window {w:4d} | Thr {thr:.1f}: Sharpe={avg_sharpe:6.2f}, MaxDD={avg_mdd:6.4f}, ADF P-Val={avg_pval:6.4f}, Score={score:6.2f}")
         
         if score > best_score:
             best_score = score
             best_w = w
+            best_thr = thr
 
-    print(color_text(f"      -> Optimal Rolling Window Selected: {best_w} (Score: {best_score:.2f})", GREEN))
-    return best_w
+    print(color_text(f"      -> Optimal Parameters Selected: Window={best_w}, Threshold={best_thr} (Score: {best_score:.2f})", GREEN))
+    return best_w, best_thr
 
 # ==============================================================================
 # 4. ROLLING METRICS & SIGNAL GENERATION
 # ==============================================================================
-if rolling_window == 'auto':
+if rolling_window == 'auto' or sigma_threshold == 'auto':
     # Base static OLS calculation for half-life
     print("\n[Prep] Calculating baseline static half-life for optimization...")
     
@@ -598,12 +614,17 @@ if rolling_window == 'auto':
         base_hl = 800 # fallback
         print(color_text("      -> Could not compute valid local half-lives. Falling back to default window of 800.", YELLOW))
     
-    optimal_window = optimize_rolling_window(df, base_hl)
-    rolling_window = optimal_window
+    optimal_window, optimal_threshold = optimize_parameters(df, base_hl)
+    if rolling_window == 'auto':
+        rolling_window = optimal_window
+    if sigma_threshold == 'auto':
+        sigma_threshold = optimal_threshold
     
     if rolling_window_only:
         print(color_text(f"\nOptimization complete. Optimal Window: {rolling_window}. Exiting as requested.", GREEN))
         sys.exit(0)
+
+opt_sigma = sigma_threshold
 
 print("\n[4/7] Calculating EWM Hedge Ratio (Beta) and Z-Scores...")
 
@@ -613,8 +634,8 @@ df = calculate_rolling_metrics(df, rolling_window)
 df = df.dropna()
 
 
-df['Z_Above'] = df['Z_Score'] > 2.0
-df['Z_Below'] = df['Z_Score'] < -2.0
+df['Z_Above'] = df['Z_Score'] > opt_sigma
+df['Z_Below'] = df['Z_Score'] < -opt_sigma
 
 prev_above = df['Z_Above'].shift(1, fill_value=False)
 prev_below = df['Z_Below'].shift(1, fill_value=False)
@@ -627,15 +648,20 @@ bearish_signals = int(df['Signal_Above_Cross'].sum())
 raw_exceedance_count = int(df['Z_Above'].sum() + df['Z_Below'].sum())
 raw_exceedance_pct = raw_exceedance_count / len(df) if len(df) > 0 else 0.0
 
+expected_exceedance_rate = 2 * (1 - norm.cdf(opt_sigma))
+
 print(f"Identified {bullish_signals} bullish signals and {bearish_signals} bearish signals based.")
-print(f"       Total raw exceedances outside ±2σ: {raw_exceedance_count} rows ({raw_exceedance_pct:.2%}), including persistence of the same signal.")
+print(f"       Total raw exceedances outside ±{opt_sigma:.2f}σ: {raw_exceedance_count} rows ({raw_exceedance_pct:.2%}), including persistence of the same signal.")
 
 signal_count = bullish_signals + bearish_signals
 signal_pct = signal_count / len(df) if len(df) > 0 else 0.0
-if raw_exceedance_pct > 0.045:
+
+# Flag warning if exceeded significantly more than dynamic normal distribution expectation (e.g., > 1.5x)
+max_expected_pct = expected_exceedance_rate * 1.5
+if raw_exceedance_pct > max_expected_pct:
     print(color_text("   !!! WARNING: The Z-score exceedance rate is unusually high.", YELLOW))
-    print(color_text(f"       {raw_exceedance_count} out of {len(df)} points ({raw_exceedance_pct:.2%}) exceed ±2σ.", YELLOW))
-    print(color_text("       In a normal distribution, ±2σ events should occur only about 4.5% of the time.", YELLOW))
+    print(color_text(f"       {raw_exceedance_count} out of {len(df)} points ({raw_exceedance_pct:.2%}) exceed ±{opt_sigma:.2f}σ.", YELLOW))
+    print(color_text(f"       In a normal distribution, ±{opt_sigma:.2f}σ events should occur only about {expected_exceedance_rate:.2%} of the time.", YELLOW))
     print(color_text("       This strongly suggests the spread distribution has extremely fat tails, or more likely, the rolling window for Z-score calculation is too short.", YELLOW))
 
 
@@ -764,8 +790,8 @@ ax2.grid(True, alpha=0.3)
 
 ax3 = plt.subplot(2, 2, 3)
 ax3.plot(df.index, df['Z_Score'], color='black', linewidth=1)
-ax3.axhline(2.0, color='red', linestyle='--', label='Short Spread (+2 / Overvalued)')
-ax3.axhline(-2.0, color='green', linestyle='--', label='Long Spread (-2 / Undervalued)')
+ax3.axhline(opt_sigma, color='red', linestyle='--', label=f'Short Spread (+{opt_sigma:.2f} / Overvalued)')
+ax3.axhline(-opt_sigma, color='green', linestyle='--', label=f'Long Spread (-{opt_sigma:.2f} / Undervalued)')
 ax3.axhline(0, color='blue', alpha=0.5)
 ax3.set_title(f'Rolling Z-Score of the Dynamic {target_ticker} / {feature_ticker} Spread')
 ax3.set_ylabel('Z-Score')
@@ -842,9 +868,9 @@ if args.backtest:
 
         # Transition Logic (5. Zero latency execution identical to optimizer)
         if pos == 0:
-            if z[i-1] < -2.0:
+            if z[i-1] < -opt_sigma:
                 pos = 1
-            elif z[i-1] > 2.0:
+            elif z[i-1] > opt_sigma:
                 pos = -1
         elif pos == 1:
             if z[i-1] >= 0.0:
