@@ -83,6 +83,9 @@ parser.add_argument('--end-time', default='2026-01-26T00:00:00', help='End times
 parser.add_argument('--rolling-window', default='800', help='Rolling window size used for rolling beta and z-score calculations. Can be "auto".')
 parser.add_argument('--rolling-window-only', action='store_true', help='Only calculate the optimal rolling window and exit.')
 parser.add_argument('--verbose', action='store_true', help='Show verbose progress updates during data fetching.')
+parser.add_argument('--backtest', action='store_true', help='Run an analytical performance backtest accounting for fees.')
+parser.add_argument('--taker-fee', type=float, default=0.05, help='Taker fee in percentage (default: 0.05).')
+parser.add_argument('--maker-fee', type=float, default=0.02, help='Maker fee in percentage (default: 0.02).')
 args = parser.parse_args()
 
 target_ticker = args.target_ticker
@@ -447,7 +450,15 @@ def optimize_rolling_window(df_in, half_life_periods):
     print(f"      Candidate Windows: {candidate_windows}")
     
     # Walk-forward split: chronological chunks, train on 70%, test on 30% of each chunk
-    chunk_size = min(len(df_in), int(parse_interval_seconds('8h') / parse_interval_seconds(interval))) # ~8 hours
+    chunk_size = int(parse_interval_seconds('8h') / parse_interval_seconds(interval)) # ~8 hours
+    
+    # Ensure chunk_size allows at least the largest training window plus some testing data
+    min_required_chunk = int(end_val / 0.7) + 500
+    if chunk_size < min_required_chunk:
+        chunk_size = min_required_chunk
+        
+    chunk_size = min(len(df_in), chunk_size)
+    
     if chunk_size < 500:
         chunk_size = len(df_in)
     
@@ -783,3 +794,109 @@ output_spread_path = 'cointegration_spread_bps.report.png'
 fig_spread.savefig(output_spread_path, dpi=150, bbox_inches='tight')
 plt.close(fig_spread)
 print(f"Saved plot: {output_spread_path}")
+
+if args.backtest:
+    print("\n[8/7] Running Analytical Performance Backtest...")
+    taker_pct = args.taker_fee / 100.0
+    maker_pct = args.maker_fee / 100.0
+
+    # Retrieve required columns as NumPy arrays for fast iteration
+    z = df['Z_Score'].values
+    features = df['Feature_Price'].values
+    targets = df['Close'].values
+    betas = df['Rolling_Beta'].shift(1).fillna(0).values
+
+    # Pre-allocate arrays
+    n = len(df)
+    gross_returns = np.zeros(n)
+    net_returns = np.zeros(n)
+    positions = np.zeros(n)
+
+    pos = 0  # 1 for Long Spread, -1 for Short Spread, 0 for Flat
+    trades = 0
+
+    for i in range(1, n):
+        # Calculate returns for the components in relative terms
+        target_ret = (targets[i] - targets[i-1]) / targets[i-1] if targets[i-1] > 0 else 0.0
+        feature_ret = (features[i] - features[i-1]) / features[i-1] if features[i-1] > 0 else 0.0
+        
+        # Spread return (target performance - beta * feature performance)
+        spread_return = target_ret - betas[i] * feature_ret
+        
+        # Store gross return applied to the *previous* position held during this step
+        gross_returns[i] = pos * spread_return
+        period_net_return = gross_returns[i]
+
+        prev_pos = pos
+
+        # Transition Logic
+        if pos == 0:
+            if z[i-1] < -2.0:
+                pos = 1
+            elif z[i-1] > 2.0:
+                pos = -1
+        elif pos == 1:
+            if z[i-1] >= 0.0:
+                pos = 0
+        elif pos == -1:
+            if z[i-1] <= 0.0:
+                pos = 0
+
+        positions[i] = pos
+
+        # Fee Logic - Proportional to turnover
+        # Going from 0 -> 1 is 1x turnover. Going from 1 -> -1 is 2x turnover.
+        turnover = abs(pos - prev_pos)
+        if turnover > 0:
+            # Notional exposure to move 1 unit of spread
+            notional_per_unit = 1.0 + abs(betas[i])
+            fee = turnover * notional_per_unit * taker_pct
+            period_net_return -= fee
+            trades += turnover
+            
+        net_returns[i] = period_net_return
+
+    df['Gross_Return'] = gross_returns
+    df['Net_Return'] = net_returns
+    df['Cumulative_Gross'] = df['Gross_Return'].cumsum()
+    df['Cumulative_Net'] = df['Net_Return'].cumsum()
+
+    total_gross = df['Cumulative_Gross'].iloc[-1]
+    total_net = df['Cumulative_Net'].iloc[-1]
+
+    # Annualized Sharpe (comparing to interval)
+    sr_net_mean = np.mean(net_returns)
+    sr_net_std = np.std(net_returns) + 1e-10
+    interval_sec = parse_interval_seconds(interval)
+    # Crypto markets are open 24/7/365
+    ann_factor = np.sqrt(365 * 86400 / interval_sec)
+    sharpe_net = (sr_net_mean / sr_net_std) * ann_factor
+
+    # Max Drawdown
+    peak = np.maximum.accumulate(df['Cumulative_Net'])
+    drawdown = peak - df['Cumulative_Net']
+    max_dd = np.max(drawdown)
+
+    round_trips = trades // 2
+
+    print(f"      Pairs Traded (Round Trips): {round_trips}")
+    print(f"      Gross Return: {total_gross:.2%}")
+    print(f"      Net Return (After Fees): {total_net:.2%}")
+    print(f"      Annualized Net Sharpe Ratio: {sharpe_net:.2f}")
+    print(f"      Max Drawdown (Net): {max_dd:.2%}")
+
+    fig_bt = plt.figure(figsize=(16, 6))
+    ax_bt = fig_bt.add_subplot(1, 1, 1)
+    ax_bt.plot(df.index, df['Cumulative_Gross'], label='Cumulative Gross Return', color='blue', alpha=0.5)
+    ax_bt.plot(df.index, df['Cumulative_Net'], label='Cumulative Net Return', color='red', linewidth=1.5)
+    ax_bt.set_title('Backtest Performance: Gross vs Net Return')
+    ax_bt.set_ylabel('Cumulative Return')
+    ax_bt.set_xlabel('Datetime')
+    ax_bt.legend(loc='upper left')
+    ax_bt.grid(True, alpha=0.3)
+    fig_bt.tight_layout()
+
+    output_bt_path = 'cointegration_backtest.report.png'
+    fig_bt.savefig(output_bt_path, dpi=150, bbox_inches='tight')
+    plt.close(fig_bt)
+    print(f"Saved plot: {output_bt_path}")
