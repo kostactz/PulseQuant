@@ -390,7 +390,7 @@ def optimize_rolling_window(df_in, half_life_periods):
         return 800
 
     start_val = max(50, int(1 * half_life_periods))
-    end_val = max(100, int(15 * half_life_periods))
+    end_val = max(100, int(20 * half_life_periods))
     
     # Generate geometric progression (10 steps from 1x to 15x)
     raw_candidates = np.geomspace(start_val, end_val, num=10)
@@ -497,7 +497,7 @@ if rolling_window == 'auto':
     print("\n[Prep] Calculating baseline static half-life for optimization...")
     
     # Configurable chunk duration for baseline half-life calculation
-    baseline_chunk_duration = '3d'
+    baseline_chunk_duration = '7d'
     chunk_size = parse_interval_seconds(baseline_chunk_duration) // parse_interval_seconds(interval)
     if chunk_size == 0 or chunk_size > len(df):
         chunk_size = len(df)
