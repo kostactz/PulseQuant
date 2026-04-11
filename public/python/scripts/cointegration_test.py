@@ -466,39 +466,46 @@ def optimize_rolling_window(df_in, half_life_periods):
     if len(chunks) > 1 and len(chunks[-1]) < 0.2 * chunk_size:
         chunks.pop() # Drop extremely small last chunk
     
-    scores = {w: {'sharpe': [], 'mdd': [], 'pvalue': []} for w in candidate_windows}
+    scores = {w: {'returns': [], 'mdd': [], 'pvalue': []} for w in candidate_windows}
     
-    for c_idx, chunk in enumerate(chunks):
+    for w in candidate_windows:
         if getattr(args, 'verbose', False):
-            print(f"         [Verbose] Optimizing chunk {c_idx + 1}/{len(chunks)} with {len(chunk)} rows...")
+            print(f"         [Verbose] Evaluating Window {w} across full dataset...")
             
-        train_len = int(len(chunk) * 0.7)
-        if train_len < end_val: continue
+        # 1. Global calculation prevents state-reset fragmentation
+        full_calc = calculate_rolling_metrics(df_in, w)
         
-        train_df = chunk.iloc[:train_len]
-        test_df = chunk.iloc[train_len:]
+        all_spread_returns = []
+        all_mdds = []
+        all_pvals = []
         
-        for w in candidate_windows:
-            test_calc = calculate_rolling_metrics(chunk, w).iloc[train_len:].dropna(subset=['Z_Score'])
+        for c_idx, chunk in enumerate(chunks):
+            train_len = int(len(chunk) * 0.7)
+            if train_len < end_val: continue
+            
+            # Slice the global DataFrame metrics for this chunk's testing period
+            # Ensure indices align safely
+            chunk_test_start = chunk.index[train_len]
+            chunk_test_end = chunk.index[-1]
+            test_calc = full_calc.loc[chunk_test_start:chunk_test_end].copy().dropna(subset=['Z_Score'])
+            
             if len(test_calc) < 10: continue
             
-            # Simple strategy simulation
             z = test_calc['Z_Score'].values
             pos = 0
-            returns = []
             features = test_calc['Feature_Price'].values
             targets = test_calc['Close'].values
-            betas = test_calc['Rolling_Beta'].shift(1).values
-            alphas = test_calc['Rolling_Alpha'].shift(1).values
+            betas = test_calc['Rolling_Beta'].shift(1).fillna(0).values
             
             spread_returns = np.zeros(len(test_calc))
             for i in range(1, len(test_calc)):
-                # Spread = Target - Beta * Feature
-                target_ret = np.log(targets[i]/targets[i-1]) if targets[i-1]>0 else 0
-                feature_ret = np.log(features[i]/features[i-1]) if features[i-1]>0 else 0
-                spread_return = target_ret - betas[i]*feature_ret
+                # 3. Simple Returns correctly mapped to Price-Beta Cointegration
+                target_diff = targets[i] - targets[i-1]
+                feature_diff = features[i] - features[i-1]
+                total_capital = targets[i-1] + abs(betas[i]) * features[i-1]
+                spread_return = (target_diff - betas[i] * feature_diff) / total_capital if total_capital > 0 else 0.0
                 
-                # Z-score based simple mean reversion
+                # Z-score simple mean reversion (zero-latency execution)
                 if z[i-1] < -2.0: pos = 1
                 elif z[i-1] > 2.0: pos = -1
                 elif pos == 1 and z[i-1] >= 0: pos = 0
@@ -506,33 +513,41 @@ def optimize_rolling_window(df_in, half_life_periods):
 
                 spread_returns[i] = pos * spread_return
                 
-            sr_mean = np.mean(spread_returns)
-            sr_std = np.std(spread_returns) + 1e-10
-            sharpe = (sr_mean / sr_std) * np.sqrt(252 * 86400 / parse_interval_seconds(interval)) # Annualized
+            all_spread_returns.extend(spread_returns)
             
             cum_returns = np.cumsum(spread_returns)
             peak = np.maximum.accumulate(cum_returns)
             drawdown = peak - cum_returns
-            mdd = np.max(drawdown)
+            all_mdds.append(np.max(drawdown))
             
-            # ADF test for stationarity
             try:
                 pval = coint(test_calc['Close'], test_calc['Feature_Price'])[1]
             except Exception:
                 pval = 1.0
+            all_pvals.append(pval)
 
-            scores[w]['sharpe'].append(sharpe)
-            scores[w]['mdd'].append(mdd)
-            scores[w]['pvalue'].append(pval)
+        if len(all_spread_returns) > 0:
+            returns_arr = np.array(all_spread_returns)
+            sr_mean = np.mean(returns_arr)
+            sr_std = np.std(returns_arr) + 1e-10
+            # 4. Use 365 days for crypto
+            sharpe = (sr_mean / sr_std) * np.sqrt(365 * 86400 / parse_interval_seconds(interval))
+            
+            scores[w]['returns'] = returns_arr
+            scores[w]['sharpe'] = sharpe
+            scores[w]['mdd'] = np.mean(all_mdds) if all_mdds else 0
+            scores[w]['pvalue'] = np.mean(all_pvals) if all_pvals else 1.0
 
     best_score = -np.inf
     best_w = candidate_windows[0]
     
     print("\n      Optimization Results Summary:")
     for w in candidate_windows:
-        avg_sharpe = np.mean(scores[w]['sharpe']) if scores[w]['sharpe'] else 0
-        avg_mdd = np.mean(scores[w]['mdd']) if scores[w]['mdd'] else 0
-        avg_pval = np.mean(scores[w]['pvalue']) if scores[w]['pvalue'] else 1.0
+        if 'sharpe' not in scores[w]: continue
+        
+        avg_sharpe = scores[w]['sharpe']
+        avg_mdd = scores[w]['mdd']
+        avg_pval = scores[w]['pvalue']
         
         # Penalize non-stationary windows
         penalty = 1.0
@@ -816,20 +831,15 @@ if args.backtest:
     trades = 0
 
     for i in range(1, n):
-        # Calculate returns for the components in relative terms
-        target_ret = (targets[i] - targets[i-1]) / targets[i-1] if targets[i-1] > 0 else 0.0
-        feature_ret = (features[i] - features[i-1]) / features[i-1] if features[i-1] > 0 else 0.0
-        
-        # Spread return (target performance - beta * feature performance)
-        spread_return = target_ret - betas[i] * feature_ret
-        
-        # Store gross return applied to the *previous* position held during this step
-        gross_returns[i] = pos * spread_return
-        period_net_return = gross_returns[i]
+        # Calculate PnL accurately mapping to Price-Beta Cointegration
+        target_diff = targets[i] - targets[i-1]
+        feature_diff = features[i] - features[i-1]
+        total_capital = targets[i-1] + abs(betas[i]) * features[i-1]
+        spread_return = (target_diff - betas[i] * feature_diff) / total_capital if total_capital > 0 else 0.0
 
         prev_pos = pos
 
-        # Transition Logic
+        # Transition Logic (5. Zero latency execution identical to optimizer)
         if pos == 0:
             if z[i-1] < -2.0:
                 pos = 1
@@ -841,16 +851,18 @@ if args.backtest:
         elif pos == -1:
             if z[i-1] <= 0.0:
                 pos = 0
+        
+        # Store gross return applied to the position held during this step
+        gross_returns[i] = pos * spread_return
+        period_net_return = gross_returns[i]
 
         positions[i] = pos
 
-        # Fee Logic - Proportional to turnover
-        # Going from 0 -> 1 is 1x turnover. Going from 1 -> -1 is 2x turnover.
+        # Fee Logic - Exact percentage allocation of capital
         turnover = abs(pos - prev_pos)
         if turnover > 0:
-            # Notional exposure to move 1 unit of spread
-            notional_per_unit = 1.0 + abs(betas[i])
-            fee = turnover * notional_per_unit * taker_pct
+            # We pay taker fee on both legs proportionally across the total capital allocated to the spread
+            fee = turnover * taker_pct
             period_net_return -= fee
             trades += turnover
             
