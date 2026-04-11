@@ -426,6 +426,9 @@ def optimize_rolling_window(df_in, half_life_periods):
     scores = {w: {'sharpe': [], 'mdd': [], 'pvalue': []} for w in candidate_windows}
     
     for c_idx, chunk in enumerate(chunks):
+        if getattr(args, 'verbose', False):
+            print(f"         [Verbose] Optimizing chunk {c_idx + 1}/{len(chunks)} with {len(chunk)} rows...")
+            
         train_len = int(len(chunk) * 0.7)
         if train_len < end_val: continue
         
@@ -513,7 +516,7 @@ if rolling_window == 'auto':
     print("\n[Prep] Calculating baseline static half-life for optimization...")
     
     # Configurable chunk duration for baseline half-life calculation
-    baseline_chunk_duration = '7d'
+    baseline_chunk_duration = '3d'
     chunk_size = parse_interval_seconds(baseline_chunk_duration) // parse_interval_seconds(interval)
     if chunk_size == 0 or chunk_size > len(df):
         chunk_size = len(df)
