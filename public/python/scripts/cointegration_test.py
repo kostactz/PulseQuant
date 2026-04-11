@@ -147,31 +147,63 @@ def calculate_missing_ranges(req_start: datetime.datetime, req_end: datetime.dat
         missing = new_missing
     return missing
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 def fetch_binance_data(symbol, interval, start_ts, end_ts):
-    """Helper function to fetch and format Binance Kline data."""
+    """Helper function to fetch and format Binance Kline data concurrently."""
     print(f"      -> Downloading Klines for {symbol} from {start_ts} to {end_ts}...")
     
-    if getattr(args, 'verbose', False):
-        klines = []
-        for i, kline in enumerate(client.get_historical_klines_generator(
-            symbol,
-            interval,
-            start_ts.strftime("%d %b, %Y %H:%M:%S"),
-            end_ts.strftime("%d %b, %Y %H:%M:%S")
-        )):
-            klines.append(kline)
-            if (i + 1) % 10000 == 0:
-                print(f"         [Verbose] Downloaded {i + 1} klines for {symbol}...")
-        if klines and len(klines) % 10000 != 0:
-            print(f"         [Verbose] Finished downloading {len(klines)} total klines for {symbol}.")
-    else:
-        klines = client.get_historical_klines(
-            symbol,
-            interval,
-            start_ts.strftime("%d %b, %Y %H:%M:%S"),
-            end_ts.strftime("%d %b, %Y %H:%M:%S")
-        )
+    interval_unit = interval[-1]
+    interval_val = int(interval[:-1])
+    unit_map = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400, 'w': 604800, 'M': 2592000}
+    interval_seconds = interval_val * unit_map.get(interval_unit, 60)
     
+    # Group by 10,000 data points per chunk (~10 pagination requests per worker)
+    chunk_seconds = 10000 * interval_seconds
+    chunk_delta = datetime.timedelta(seconds=chunk_seconds)
+    
+    chunks = []
+    curr = start_ts
+    while curr < end_ts:
+        next_curr = curr + chunk_delta
+        if next_curr > end_ts:
+            next_curr = end_ts
+        chunks.append((curr, next_curr))
+        curr = next_curr
+
+    klines = []
+    
+    def fetch_chunk(s, e):
+        return client.get_historical_klines(
+            symbol,
+            interval,
+            s.strftime("%d %b, %Y %H:%M:%S"),
+            e.strftime("%d %b, %Y %H:%M:%S")
+        )
+
+    completed = 0
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {executor.submit(fetch_chunk, ch[0], ch[1]): (i, ch) for i, ch in enumerate(chunks)}
+        results = []
+        for f in as_completed(futures):
+            i, ch = futures[f]
+            try:
+                data = f.result()
+                results.append((i, data))
+                completed += 1
+                if getattr(args, 'verbose', False):
+                    print(f"         [Verbose] Downloaded chunk {completed}/{len(chunks)} for {symbol}...")
+            except Exception as e:
+                print(f"         ERROR fetching chunk {ch[0]} - {ch[1]}: {e}")
+                
+    results.sort(key=lambda x: x[0])
+    for r in results:
+        if r[1]:
+            klines.extend(r[1])
+
+    if not klines:
+        return pd.DataFrame()
+        
     columns = [
         'Open_time', 'Open', 'High', 'Low', 'Close', 'Volume', 'Close_time', 
         'Quote_asset_volume', 'Number_of_trades', 'Taker_buy_base_asset_volume', 
