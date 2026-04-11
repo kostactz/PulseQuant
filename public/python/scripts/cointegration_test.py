@@ -82,6 +82,7 @@ parser.add_argument('--start-time', default='2026-01-22T00:00:00', help='Start t
 parser.add_argument('--end-time', default='2026-01-26T00:00:00', help='End timestamp in ISO format.')
 parser.add_argument('--rolling-window', default='800', help='Rolling window size used for rolling beta and z-score calculations. Can be "auto".')
 parser.add_argument('--rolling-window-only', action='store_true', help='Only calculate the optimal rolling window and exit.')
+parser.add_argument('--verbose', action='store_true', help='Show verbose progress updates during data fetching.')
 args = parser.parse_args()
 
 target_ticker = args.target_ticker
@@ -149,12 +150,27 @@ def calculate_missing_ranges(req_start: datetime.datetime, req_end: datetime.dat
 def fetch_binance_data(symbol, interval, start_ts, end_ts):
     """Helper function to fetch and format Binance Kline data."""
     print(f"      -> Downloading Klines for {symbol} from {start_ts} to {end_ts}...")
-    klines = client.get_historical_klines(
-        symbol,
-        interval,
-        start_ts.strftime("%d %b, %Y %H:%M:%S"),
-        end_ts.strftime("%d %b, %Y %H:%M:%S")
-    )
+    
+    if getattr(args, 'verbose', False):
+        klines = []
+        for i, kline in enumerate(client.get_historical_klines_generator(
+            symbol,
+            interval,
+            start_ts.strftime("%d %b, %Y %H:%M:%S"),
+            end_ts.strftime("%d %b, %Y %H:%M:%S")
+        )):
+            klines.append(kline)
+            if (i + 1) % 10000 == 0:
+                print(f"         [Verbose] Downloaded {i + 1} klines for {symbol}...")
+        if klines and len(klines) % 10000 != 0:
+            print(f"         [Verbose] Finished downloading {len(klines)} total klines for {symbol}.")
+    else:
+        klines = client.get_historical_klines(
+            symbol,
+            interval,
+            start_ts.strftime("%d %b, %Y %H:%M:%S"),
+            end_ts.strftime("%d %b, %Y %H:%M:%S")
+        )
     
     columns = [
         'Open_time', 'Open', 'High', 'Low', 'Close', 'Volume', 'Close_time', 
