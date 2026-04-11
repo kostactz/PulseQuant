@@ -1,6 +1,5 @@
 import numpy as np
 import math
-import uuid
 from collections import deque
 
 # ==========================================
@@ -48,15 +47,6 @@ class RingBuffer:
         if self.count < self.size:
             return self.data[:self.count]
         return np.concatenate((self.data[self.index:], self.data[:self.index]))
-
-    def reset(self):
-        self.data.fill(0.0)
-        self.index = 0
-        self.count = 0
-        self.running_sum = 0.0
-        self.running_sum_sq = 0.0
-        self.total_appends = 0
-        self.anchor = 0.0
 
     def mean(self):
         return (self.running_sum / self.count) + self.anchor if self.count > 0 else 0.0
@@ -109,7 +99,7 @@ class IndicatorState:
         self.obi_ema = 0.0
         # Deep OBI configuration
         self.dobi_lambda = 0.02  # exponential decay factor (lambda)
-        self.dobi_levels = 10   # how many levels deep to consider
+        self.dobi_levels = 18   # how many levels deep to consider
         self.vpin_alpha = 0.5056018116224201
         self.vpin_sweep_threshold = 0.15667675013266968
         self.alpha_vwap_decay = 0.0011576180112907173
@@ -664,9 +654,9 @@ class Portfolio:
         self.initial_capital = initial_capital
         self.reset()
 
-    def execute_trade(self, side, qty, price, timestamp, order_type='taker', indicators=None, reason='', client_order_id=None):
-        # Fees: taker pays 0.05%, maker pays 0.02% 
-        fee_rate = 0.0005 if order_type == 'taker' else 0.0000
+    def execute_trade(self, side, qty, price, timestamp, order_type='taker', indicators=None, reason=''):
+        # Fees: taker pays 0.02%, maker receives 0.01% rebate
+        fee_rate = 0.0004 if order_type == 'taker' else -0.0001
         fee = price * qty * fee_rate
         old_pos = self.position
 
@@ -763,34 +753,17 @@ class Portfolio:
             self.avg_entry_price = total_value / total_qty
             
         self.last_trade_price = price
-        
-        found = False
-        if client_order_id:
-            for t in reversed(self.ui_recent_trades):
-                if t.get('client_order_id') == client_order_id:
-                    old_qty = t['qty']
-                    old_price = t['price']
-                    new_qty = old_qty + float(qty)
-                    if new_qty > 0:
-                        t['price'] = ((old_price * old_qty) + (price * float(qty))) / new_qty
-                    t['qty'] = round(new_qty, 6)
-                    t['timestamp'] = timestamp
-                    found = True
-                    break
-                    
-        if not found:
-            trade_obj = {
-                'timestamp': timestamp, 
-                'side': side, 
-                'price': price, 
-                'qty': round(float(qty), 6), 
-                'type': order_type,
-                'indicators': indicators.copy() if indicators else {},
-                'reason': reason,
-                'client_order_id': client_order_id
-            }
-            self.trades.append(trade_obj)
-            self.ui_recent_trades.append(trade_obj)
+        trade_obj = {
+            'timestamp': timestamp, 
+            'side': side, 
+            'price': price, 
+            'qty': round(float(qty), 6), 
+            'type': order_type,
+            'indicators': indicators.copy() if indicators else {},
+            'reason': reason
+        }
+        self.trades.append(trade_obj)
+        self.ui_recent_trades.append(trade_obj)
         
         # Calculate these on the fly for the log
         analytics = self.get_trade_analytics()
@@ -804,7 +777,6 @@ class Portfolio:
                 'side': side,
                 'price': price,
                 'qty': round(float(qty), 6),
-                'order_type': order_type,
                 'reason': reason,
                 'indicators': indicators.copy() if indicators else {},
                 'metrics': {
@@ -918,11 +890,9 @@ class TradingSession:
         self.value_hist = deque(maxlen=75000)
         
         self.tick_counter = 0
-        self.pending_orders = {}
-        self.outbound_queue = []
+        self.pending_orders = []
         self.canceled_orders = deque(maxlen=5000)
         self.canceled_orders_total = 0
-        self.immediate_execution = False
         self.last_toxicity_state = {
             'buy_ofi_cancel_level': -0.5,
             'sell_ofi_cancel_level': 0.5,
@@ -939,7 +909,6 @@ class TradingSession:
         self.current_drawdown_start: float | None = None
         self.max_dd_pct = 0.0
         self.max_dd_duration = 0.0
-        self.last_ui_sync_count = 0
 
         # Post-only quoting and tick size for chaser orders
         self.tick_size = 0.05327427600863069
@@ -957,22 +926,21 @@ def execute_trade(side, bps=None, order_type='taker', reason='Manual user trade'
     
     actual_bps = bps if bps is not None else session.trade_size_bps
     
-    price_ref = session.last_ui_ask if side == 'buy' else session.last_ui_bid
-    portfolio_value = session.portfolio.get_metrics(price_ref)
+    price = session.last_ui_ask if side == 'buy' else session.last_ui_bid
+    portfolio_value = session.portfolio.get_metrics(price)
     
+    # Bug fix: Handle bps=0 for full position closes requested by generate_signal
     if actual_bps == 0:
         qty = abs(session.portfolio.position)
     else:
-        qty = (portfolio_value * (actual_bps / 10000.0)) / price_ref
+        qty = (portfolio_value * (actual_bps / 10000.0)) / price
         
     if qty <= 0: return False
     
     ind_snapshot = session.indicators.latest.copy() if hasattr(session.indicators, 'latest') else {}
+    session.portfolio.execute_trade(side, qty, price, session.last_ui_timestamp, order_type, ind_snapshot, reason=reason)
     
-    # Route the order through the outbound queue instead of immediately faking a portfolio update
-    row_mock = {'ask': session.last_ui_ask, 'bid': session.last_ui_bid}
-    route_order(side, qty, order_type, row_mock, ind_snapshot, session.last_ui_timestamp, signal_reason=reason)
-    
+    # Manually trigger cooldown for manual trades as well
     session.strategy.cooldown_end_time = session.last_ui_timestamp + 2500 
     return True
 
@@ -980,43 +948,44 @@ def set_auto_trade(enabled):
     session.auto_trade = enabled
     return session.auto_trade
 
-def set_immediate_execution(enabled):
-    session.immediate_execution = bool(enabled)
-    return session.immediate_execution
-
 def update_strategy(style, speed):
     session.strategy.set_params(style, speed)
     session.indicators.reset(session.strategy.get_speed_multiplier())
     return True
 
-def handle_tick(row, ts):
-    ind = session.indicators.update(
-        row['bid'], row['ask'], row['bid_vol'], row['ask_vol'],
-        row['delta_bid'], row['delta_ask'], row.get('trade_volume', 0.0),
-        ts,
-        row.get('depth', {}).get('bids')[:10] if row.get('depth') else None,
-        row.get('depth', {}).get('asks')[:10] if row.get('depth') else None 
-    )
+def process_data(new_rows):
+    for row in new_rows:
+        ts = float(row['timestamp'])
 
-    toxicity_state = session.strategy.compute_toxicity_state(ind)
-    session.last_toxicity_state = toxicity_state.copy()
+        ind = session.indicators.update(
+            row['bid'], row['ask'], row['bid_vol'], row['ask_vol'],
+            row['delta_bid'], row['delta_ask'], row.get('trade_volume', 0.0),
+            ts,
+            row.get('bids'),
+            row.get('asks')
+        )
 
-    if not session.immediate_execution:
-        # 1. Cancel stale maker orders due to toxicity
-        for order_id, order in list(session.pending_orders.items()):
-            if order.get('status') not in ('NEW', 'PARTIALLY_FILLED'):
-                continue
+        toxicity_state = session.strategy.compute_toxicity_state(ind)
+        session.last_toxicity_state = toxicity_state.copy()
 
+        # 1. Cancel stale maker orders first, then check fills
+        active_orders = []
+        for order in session.pending_orders:
             should_cancel = False
             cancel_reason = None
+            trigger_detail = {}
+
             submitted_at = float(order.get('submitted_at', ts))
             resting_ms = ts - submitted_at
             is_violent_sweep = abs(toxicity_state.get('ofi_deriv', 0.0)) > 2.0
 
+            # Only apply toxicity-based cancellation after the order has rested, unless
+            # there is a violent order flow sweep against us.
             can_apply_toxicity = (resting_ms >= session.strategy.min_rest_ms) or is_violent_sweep
 
             if can_apply_toxicity:
                 obi_norm_val = toxicity_state.get('obi_norm', toxicity_state.get('obi', 0.0))
+                # Use relaxed toxicity boundaries once an order has rested for min_rest_ms
                 if order['side'] == 'buy':
                     if resting_ms >= session.strategy.min_rest_ms:
                         ofi_gate = toxicity_state['ofi_ema'] < toxicity_state.get('buy_ofi_cancel_level_resting', toxicity_state['buy_ofi_cancel_level'])
@@ -1028,6 +997,16 @@ def handle_tick(row, ts):
                     if ofi_gate or obi_gate:
                         should_cancel = True
                         cancel_reason = 'buy_toxicity_gate'
+                        trigger_detail = {
+                            'ofi_gate': bool(ofi_gate),
+                            'obi_gate': bool(obi_gate),
+                            'ofi_cancel_level': float(toxicity_state.get('buy_ofi_cancel_level_resting', toxicity_state['buy_ofi_cancel_level'])),
+                            'obi_cancel_level': float(-toxicity_state.get('obi_toxicity_threshold_resting', toxicity_state['obi_toxicity_threshold'])),
+                            'obi_norm': float(obi_norm_val),
+                            'resting_ms': resting_ms,
+                            'violent_sweep': is_violent_sweep,
+                            'resting_multiplier': session.strategy.toxicity_resting_multiplier
+                        }
                 elif order['side'] == 'sell':
                     if resting_ms >= session.strategy.min_rest_ms:
                         ofi_gate = toxicity_state['ofi_ema'] > toxicity_state.get('sell_ofi_cancel_level_resting', toxicity_state['sell_ofi_cancel_level'])
@@ -1039,297 +1018,220 @@ def handle_tick(row, ts):
                     if ofi_gate or obi_gate:
                         should_cancel = True
                         cancel_reason = 'sell_toxicity_gate'
+                        trigger_detail = {
+                            'ofi_gate': bool(ofi_gate),
+                            'obi_gate': bool(obi_gate),
+                            'ofi_cancel_level': float(toxicity_state.get('sell_ofi_cancel_level_resting', toxicity_state['sell_ofi_cancel_level'])),
+                            'obi_cancel_level': float(toxicity_state.get('obi_toxicity_threshold_resting', toxicity_state['obi_toxicity_threshold'])),
+                            'obi_norm': float(obi_norm_val),
+                            'resting_ms': resting_ms,
+                            'violent_sweep': is_violent_sweep,
+                            'resting_multiplier': session.strategy.toxicity_resting_multiplier
+                        }
+            else:
+                # Too soon to cancel; keep order alive and record reason for trace optionally
+                trigger_detail = {
+                    'resting_ms': resting_ms,
+                    'min_rest_ms': session.strategy.min_rest_ms,
+                    'violent_sweep': is_violent_sweep,
+                    'reason': 'resting_time_not_met'
+                }
 
             if should_cancel:
-                order['status'] = 'PENDING_CANCEL'
-                session.outbound_queue.append({
-                    'action': 'CANCEL_ORDER',
-                    'clientOrderId': order_id,
-                    'symbol': 'btcusdt',
-                    'reason': cancel_reason
+                session.canceled_orders_total += 1
+                submitted_at = float(order.get('submitted_at', ts))
+                cancel_event = {
+                    'timestamp': ts,
+                    'submitted_at': submitted_at,
+                    'resting_ms': float(ts - submitted_at),
+                    'side': order['side'],
+                    'price': float(order['price']),
+                    'qty': float(order['qty']),
+                    'reason': cancel_reason,
+                    'trigger_detail': trigger_detail,
+                    'toxicity': toxicity_state.copy()
+                }
+                session.canceled_orders.append(cancel_event)
+                session.logs.append({
+                    'level': 'WARN',
+                    'message': 'Canceled stale maker order due to toxicity shift',
+                    'data': cancel_event
                 })
                 continue
 
-        # 2. Chaser update: reprice pending maker exit orders if price moved significantly
-        for order_id, order in list(session.pending_orders.items()):
-            if order.get('status') not in ('NEW', 'PARTIALLY_FILLED'):
-                continue
-            if order.get('type', 'maker') == 'maker' and order.get('chaser'):
+            active_orders.append(order)
+
+        # First, process fills based on the new price data traded through the OLD order prices
+        remaining_orders = []
+        for order in active_orders:
+            filled = False
+            # A maker buy is filled if the best ask crossed it, or if the bid traded completely through it (dropped below)
+            if order['side'] == 'buy' and (row['ask'] <= order['price'] or row['bid'] < order['price']):
+                session.portfolio.execute_trade('buy', order['qty'], order['price'], ts, 'maker', order.get('ind', {}), reason=order.get('reason', ''))
+                filled = True
+            # A maker sell is filled if the best bid crossed it, or if the ask traded completely through it (went above)
+            elif order['side'] == 'sell' and (row['bid'] >= order['price'] or row['ask'] > order['price']):
+                session.portfolio.execute_trade('sell', order['qty'], order['price'], ts, 'maker', order.get('ind', {}), reason=order.get('reason', ''))
+                filled = True
+
+            if not filled:
+                remaining_orders.append(order)
+
+        # Then chaser update: reprice pending maker exit orders only if price has moved away significantly.
+        for order in remaining_orders:
+            if order.get('type', 'maker') == 'maker':
                 tick = session.tick_size
-                reprice_threshold = tick * 10
+                reprice_threshold = tick * 2
                 if order['side'] == 'buy':
                     target_price = min(row['bid'] + tick, row['ask'] - tick)
                 else:
                     target_price = max(row['ask'] - tick, row['bid'] + tick)
 
+                # Reprice only if the existing order is no longer within the line of sight by threshold.
                 if abs(order['price'] - target_price) > reprice_threshold:
-                    order['status'] = 'PENDING_CANCEL'
-                    session.outbound_queue.append({
-                        'action': 'CANCEL_ORDER',
-                        'clientOrderId': order_id,
-                        'symbol': 'btcusdt',
-                        'reason': 'chaser_reprice'
-                    })
+                    order['price'] = target_price
 
-    session.ui_timestamps.append(ts)
-    session.ui_mid_prices.append(ind['micro_price'])
-    session.ui_ofi.append(ind['ofi_norm'])
-    session.ui_ofi_ema.append(ind['ofi_ema'])
-    session.ui_macro_sma.append(ind['macro_sma'])
-    session.ui_vwap.append(ind['vwap'])
-    session.ui_bb_mid.append(ind.get('bb_mid', ind['micro_price']))
-    session.ui_bb_upper.append(ind.get('bb_upper', ind['micro_price']))
-    session.ui_bb_lower.append(ind.get('bb_lower', ind['micro_price']))
-    session.ui_obi.append(ind['obi'])
-    session.ui_obi_raw.append(ind['obi_raw'])
-    session.ui_obi_norm.append(ind['obi_norm'])
-    
-    session.last_ui_timestamp = ts
-    session.last_ui_ask = row['ask']
-    session.last_ui_bid = row['bid']
-    session.tick_counter += 1
-    
-    if session.tick_counter % 50 == 0:
-        port_val = session.portfolio.get_metrics(ind['micro_price'])
-        session.value_hist.append(port_val)
-        
-        if port_val > session.peak_equity:
-            session.peak_equity = port_val
-            session.current_drawdown_start = None
-        else:
-            if session.current_drawdown_start is None:
-                session.current_drawdown_start = ts
-            dd_pct = (session.peak_equity - port_val) / session.peak_equity
-            session.max_dd_pct = max(session.max_dd_pct, dd_pct)
-            dd_duration = ts - session.current_drawdown_start
-            session.max_dd_duration = max(session.max_dd_duration, dd_duration)
+                # Defensive: ensure price remains in a sane range.
+                if order['price'] <= 0:
+                    order['price'] = row['bid'] if order['side'] == 'buy' else row['ask']
 
-    # Signal generation
-    if session.auto_trade:
-        sig, auto_bps, order_type, toxicity_state, reason_text = session.strategy.generate_signal(ind, session.portfolio, ts)
-        session.last_toxicity_state = toxicity_state.copy()
+        session.pending_orders = remaining_orders
         
-        if sig != 0:
-            side = 'buy' if sig == 1 else 'sell'
+        session.ui_timestamps.append(ts)
+        session.ui_mid_prices.append(ind['micro_price'])
+        session.ui_ofi.append(ind['ofi_norm'])
+        session.ui_ofi_ema.append(ind['ofi_ema'])
+        session.ui_macro_sma.append(ind['macro_sma'])
+        session.ui_vwap.append(ind['vwap'])
+        session.ui_bb_mid.append(ind.get('bb_mid', ind['micro_price']))
+        session.ui_bb_upper.append(ind.get('bb_upper', ind['micro_price']))
+        session.ui_bb_lower.append(ind.get('bb_lower', ind['micro_price']))
+        session.ui_obi.append(ind['obi'])
+        session.ui_obi_raw.append(ind['obi_raw'])
+        session.ui_obi_norm.append(ind['obi_norm'])
+        
+        session.last_ui_timestamp = ts
+        session.last_ui_ask = row['ask']
+        session.last_ui_bid = row['bid']
+        session.tick_counter += 1
+        
+        # Periodic equity curve snapshot (every 50 ticks)
+        if session.tick_counter % 50 == 0:
+            port_val = session.portfolio.get_metrics(ind['micro_price'])
+            session.value_hist.append(port_val)
             
-            # Check if we're closing
-            closing = False
-            if sig == 1 and session.portfolio.position < 0: closing = True
-            elif sig == -1 and session.portfolio.position > 0: closing = True
-            
-            qty_to_trade = 0
-            if closing:
-                has_pending_close = any(o['side'] == side and o.get('status') in ('NEW', 'PENDING_SUBMIT') for o in session.pending_orders.values())
-                if order_type == 'taker':
-                    # Cancel existing makers to take
-                    for oid, o in session.pending_orders.items():
-                        if o['side'] == side:
-                            o['status'] = 'PENDING_CANCEL'
-                            session.outbound_queue.append({'action': 'CANCEL_ORDER', 'clientOrderId': oid, 'symbol': 'btcusdt'})
-                    qty_to_trade = abs(session.portfolio.position)
-                elif not has_pending_close:
-                    qty_to_trade = abs(session.portfolio.position)
-            elif auto_bps > 0:
-                price_ref = row['ask'] if side == 'buy' else row['bid']
-                qty_to_trade = (session.portfolio.get_metrics(price_ref) * (auto_bps / 10000.0)) / price_ref
-
-            if qty_to_trade > 0:
-                if session.immediate_execution:
-                    # Immediate execution path: apply trade instantly to portfolio
-                    execute_price = row['ask'] if side == 'buy' else row['bid']
-                    session.portfolio.execute_trade(
-                        side=side,
-                        qty=qty_to_trade,
-                        price=execute_price,
-                        timestamp=ts,
-                        order_type='taker',
-                        indicators=ind.copy(),
-                        reason=reason_text,
-                        client_order_id=None
-                    )
-                else:
-                    route_order(side, qty_to_trade, order_type, row, ind.copy(), ts, reason_text)
-
-def route_order(side, qty, order_type, price_reference_row, ind_copy, ts, signal_reason=''):
-    client_order_id = str(uuid.uuid4())
-    
-    # Binance BTCUSDT futures require stepSize of 0.001
-    qty = max(0.001, round(float(qty), 3))
-    
-    if order_type == 'taker':
-        exec_price = price_reference_row['ask'] if side == 'buy' else price_reference_row['bid']
-        
-        session.pending_orders[client_order_id] = {
-            'side': side, 'qty': qty, 'type': 'taker',
-            'price': exec_price, 'ind': ind_copy,
-            'submitted_at': ts, 'status': 'PENDING_SUBMIT',
-            'reason': signal_reason, 'chaser': False
-        }
-        
-        session.outbound_queue.append({
-            'action': 'PLACE_ORDER',
-            'clientOrderId': client_order_id,
-            'symbol': 'btcusdt',
-            'side': side.upper(),
-            'type': 'MARKET',
-            'quantity': qty
-        })
-    else:
-        tick = session.tick_size
-        if side == 'buy':
-            limit_price = min(price_reference_row['bid'] + tick, price_reference_row['ask'] - tick)
-        else:
-            limit_price = max(price_reference_row['ask'] - tick, price_reference_row['bid'] + tick)
-
-        if limit_price <= 0:
-            limit_price = price_reference_row['bid'] if side == 'buy' else price_reference_row['ask']
-
-        # BTCUSDT price precision is 1 decimal place
-        limit_price = round(float(limit_price), 1)
-
-        session.pending_orders[client_order_id] = {
-            'side': side, 'qty': qty, 'type': 'maker',
-            'price': limit_price, 'ind': ind_copy,
-            'submitted_at': ts, 'status': 'PENDING_SUBMIT',
-            'toxicity_at_submit': session.last_toxicity_state.copy(),
-            'reason': signal_reason, 'chaser': True
-        }
-        
-        session.outbound_queue.append({
-            'action': 'PLACE_ORDER',
-            'clientOrderId': client_order_id,
-            'symbol': 'btcusdt',
-            'side': side.upper(),
-            'type': 'LIMIT',
-            'price': limit_price,
-            'quantity': qty,
-            'timeInForce': 'GTX' # Post-Only
-        })
-
-def handle_execution_report(report):
-    client_order_id = report.get('clientOrderId')
-    status = report.get('status')
-    
-    if client_order_id in session.pending_orders:
-        order = session.pending_orders[client_order_id]
-        
-        if status in ['NEW', 'PARTIALLY_FILLED']:
-            order['status'] = status
-            if status == 'PARTIALLY_FILLED':
-                # Register fill
-                filled_qty = float(report.get('lastFilledQuantity', 0))
-                filled_price = float(report.get('lastFilledPrice', order['price']))
-                ts = float(report.get('transactionTime', session.last_ui_timestamp))
-                session.portfolio.execute_trade(order['side'], filled_qty, filled_price, ts, order['type'], order.get('ind', {}), reason=order.get('reason', ''), client_order_id=client_order_id)
-        elif status == 'FILLED':
-            filled_qty = float(report.get('lastFilledQuantity', 0))
-            filled_price = float(report.get('lastFilledPrice', order['price']))
-            ts = float(report.get('transactionTime', session.last_ui_timestamp))
-            session.portfolio.execute_trade(order['side'], filled_qty, filled_price, ts, order['type'], order.get('ind', {}), reason=order.get('reason', ''), client_order_id=client_order_id)
-            del session.pending_orders[client_order_id]
-        elif status in ['CANCELED', 'EXPIRED', 'REJECTED']:
-            session.canceled_orders_total += 1
-            ts = float(report.get('transactionTime', session.last_ui_timestamp))
-            submitted_at = order.get('submitted_at', ts)
-            
-            reason = report.get('cancelReason', status)
-            
-            # Add detailed log for visibility in UI
-            if status == 'REJECTED' or status == 'EXPIRED':
-                session.logs.append({
-                    'level': 'ERROR',
-                    'message': f"Order {status}: {client_order_id}",
-                    'data': {
-                        'side': order['side'],
-                        'price': order['price'],
-                        'qty': order['qty'],
-                        'reason': reason
-                    }
-                })
-            elif status == 'CANCELED':
-                session.logs.append({
-                    'level': 'WARN',
-                    'message': f"Order CANCELED: {client_order_id}",
-                    'data': {
-                        'side': order['side'],
-                        'reason': reason
-                    }
-                })
-            
-            session.canceled_orders.append({
-                'timestamp': ts,
-                'submitted_at': submitted_at,
-                'resting_ms': ts - submitted_at,
-                'side': order['side'],
-                'price': order['price'],
-                'qty': order['qty'],
-                'reason': reason,
-                'toxicity': session.last_toxicity_state.copy()
-            })
-            del session.pending_orders[client_order_id]
-
-def handle_sync_state(data):
-    open_orders = data.get('open_orders', [])
-    exchange_cids = {str(o.get('clientOrderId')) for o in open_orders if o.get('clientOrderId')}
-    
-    cids_to_cancel = []
-    for client_order_id, order in session.pending_orders.items():
-        if order.get('status') in ['NEW', 'PARTIALLY_FILLED']:
-            if str(client_order_id) not in exchange_cids:
-                cids_to_cancel.append(client_order_id)
+            if port_val > session.peak_equity:
+                session.peak_equity = port_val
+                session.current_drawdown_start = None
+            else:
+                if session.current_drawdown_start is None:
+                    session.current_drawdown_start = ts
                 
-    for cid in cids_to_cancel:
-        order = session.pending_orders[cid]
-        session.canceled_orders_total += 1
-        ts = session.last_ui_timestamp
-        submitted_at = order.get('submitted_at', ts)
+                # Calculate depth
+                dd_pct = (session.peak_equity - port_val) / session.peak_equity
+                session.max_dd_pct = max(session.max_dd_pct, dd_pct)
+                
+                # Calculate duration
+                dd_duration = ts - session.current_drawdown_start
+                session.max_dd_duration = max(session.max_dd_duration, dd_duration)
         
-        session.canceled_orders.append({
-            'timestamp': ts,
-            'submitted_at': submitted_at,
-            'resting_ms': ts - submitted_at,
-            'side': order['side'],
-            'price': order['price'],
-            'qty': order['qty'],
-            'reason': 'sync_reconciliation_missing',
-            'toxicity': session.last_toxicity_state.copy()
-        })
-        del session.pending_orders[cid]
-        
-    if 'capital' in data and data['capital'] is not None:
-        session.portfolio.capital = float(data['capital'])
-    
-    if 'position' in data and data['position'] is not None:
-        session.portfolio.position = float(data['position'])
-        
-    if 'capital' in data or 'position' in data:
-        # Reset peak equity since portfolio value jumped due to sync
-        # Determine port val based on last ui price if available
-        price_ref = session.ui_mid_prices.get_window()[-1] if session.ui_mid_prices.count > 0 else 0.0
-        if price_ref > 0:
-            session.peak_equity = session.portfolio.get_metrics(price_ref)
-            session.current_drawdown_start = None
+        # Helper to route orders
+        def route_order(side, qty, order_type, price_reference_row, ind_copy, signal_reason=''):
+            if order_type == 'taker':
+                # Execute immediately crossing the spread
+                exec_price = price_reference_row['ask'] if side == 'buy' else price_reference_row['bid']
+                session.portfolio.execute_trade(side, qty, exec_price, ts, 'taker', ind_copy, reason=signal_reason)
+            else:
+                # Place limit order at 1 tick inside best bid/ask for post-only chaser behavior.
+                tick = session.tick_size
+                if side == 'buy':
+                    target_price = price_reference_row['bid'] + tick
+                    limit_price = min(target_price, price_reference_row['ask'] - tick)
+                else:
+                    target_price = price_reference_row['ask'] - tick
+                    limit_price = max(target_price, price_reference_row['bid'] + tick)
 
-def get_metrics():
-    min_time = session.ui_timestamps.data[session.ui_timestamps.index] if session.ui_timestamps.count == session.ui_timestamps.size else (session.ui_timestamps.data[0] if session.ui_timestamps.count > 0 else 0.0)
-    
+                # Prevent cross-spread order price
+                if side == 'buy':
+                    limit_price = min(limit_price, price_reference_row['ask'] - tick)
+                else:
+                    limit_price = max(limit_price, price_reference_row['bid'] + tick)
+
+                if limit_price <= 0:
+                    limit_price = price_reference_row['bid'] if side == 'buy' else price_reference_row['ask']
+
+                session.pending_orders.append({
+                    'side': side, 'qty': qty, 'type': 'maker',
+                    'price': limit_price, 'ind': ind_copy,
+                    'submitted_at': ts,
+                    'toxicity_at_submit': session.last_toxicity_state.copy(),
+                    'reason': signal_reason,
+                    'chaser': True
+                })
+
+        if session.auto_trade:
+            sig, auto_bps, order_type, toxicity_state, reason_text = session.strategy.generate_signal(ind, session.portfolio, ts)
+            session.last_toxicity_state = toxicity_state.copy()
+            
+            if sig == 1:
+                if session.portfolio.position < 0:
+                    has_pending_close = any(o['side'] == 'buy' for o in session.pending_orders)
+                    if order_type == 'taker':
+                        session.pending_orders = [o for o in session.pending_orders if o['side'] != 'buy']
+                        route_order('buy', abs(session.portfolio.position), order_type, row, ind.copy(), signal_reason=reason_text)
+                    elif not has_pending_close:
+                        route_order('buy', abs(session.portfolio.position), order_type, row, ind.copy(), signal_reason=reason_text)
+                if auto_bps > 0:
+                    qty = (session.portfolio.get_metrics(row['ask']) * (auto_bps / 10000.0)) / row['ask']
+                    if qty > 0: route_order('buy', qty, order_type, row, ind.copy(), signal_reason=reason_text)
+                    
+            elif sig == -1:
+                if session.portfolio.position > 0:
+                    has_pending_close = any(o['side'] == 'sell' for o in session.pending_orders)
+                    if order_type == 'taker':
+                        session.pending_orders = [o for o in session.pending_orders if o['side'] != 'sell']
+                        route_order('sell', abs(session.portfolio.position), order_type, row, ind.copy(), signal_reason=reason_text)
+                    elif not has_pending_close:
+                        route_order('sell', abs(session.portfolio.position), order_type, row, ind.copy(), signal_reason=reason_text)
+                if auto_bps > 0:
+                    qty = (session.portfolio.get_metrics(row['bid']) * (auto_bps / 10000.0)) / row['bid']
+                    if qty > 0: route_order('sell', qty, order_type, row, ind.copy(), signal_reason=reason_text)
+
+    min_time = session.ui_timestamps.data[session.ui_timestamps.index] if session.ui_timestamps.count == session.ui_timestamps.size else session.ui_timestamps.data[0]
+    if session.ui_timestamps.count == 0:
+        min_time = 0.0
+
     while session.portfolio.ui_recent_trades and session.portfolio.ui_recent_trades[0]['timestamp'] < min_time:
         session.portfolio.ui_recent_trades.popleft()
     while session.canceled_orders and session.canceled_orders[0]['timestamp'] < min_time:
         session.canceled_orders.popleft()
 
-    recent_trades = list(session.portfolio.ui_recent_trades)[-100:]
-    recent_cancellations = list(session.canceled_orders)[-100:]
+    recent_trades = list(session.portfolio.ui_recent_trades)
+    recent_cancellations = list(session.canceled_orders)
+    
+    current_logs = session.logs.copy()
+    session.logs.clear()
     
     port_val = session.value_hist[-1] if session.value_hist else session.portfolio.capital
     current_dd_pct = (session.peak_equity - port_val) / session.peak_equity if port_val < session.peak_equity else 0.0
 
     return {
+        "timestamps": session.ui_timestamps.get_window().tolist(),
+        "mid_prices": session.ui_mid_prices.get_window().tolist(), 
+        "ofi": session.ui_ofi.get_window().tolist(),
+        "ofi_ema": session.ui_ofi_ema.get_window().tolist(),
+        "macro_sma": session.ui_macro_sma.get_window().tolist(),
+        "vwap": session.ui_vwap.get_window().tolist(),
+        "bb_mid": session.ui_bb_mid.get_window().tolist(),
+        "bb_upper": session.ui_bb_upper.get_window().tolist(),
+        "bb_lower": session.ui_bb_lower.get_window().tolist(),
+        "obi": session.ui_obi.get_window().tolist(),
+        "obi_raw": session.ui_obi_raw.get_window().tolist(),
+        "obi_norm": session.ui_obi_norm.get_window().tolist(),
         "last_micro_price": session.ui_mid_prices.get_window()[-1] if session.ui_mid_prices.count > 0 else 0.0,
         "portfolio_value": port_val,
         "capital": float(session.portfolio.capital),
         "position": float(session.portfolio.position),
-        "tick_count": session.tick_counter,
         "pending_order_count": len(session.pending_orders),
         "canceled_orders_total": int(session.canceled_orders_total),
         "cancellation_rate": float(
@@ -1348,85 +1250,42 @@ def get_metrics():
         "strategy_speed": session.strategy.speed,
         "recent_trades_full": recent_trades,
         "recent_cancellations": recent_cancellations,
-        "pending_orders": list(session.pending_orders.values()),
+        "logs": current_logs,
         "analytics": session.portfolio.get_trade_analytics(),
         "current_dd_pct": float(current_dd_pct),
         "max_dd_pct": float(session.max_dd_pct),
         "max_dd_duration": float(session.max_dd_duration)
     }
 
-def process_events(events):
-    for event in events:
-        event_type = event.get('type', 'TICK') if isinstance(event, dict) else 'TICK'
-        
-        if event_type == 'TICK':
-            row = event.get('data', event) if isinstance(event, dict) else event
-            ts = float(row['timestamp'])
-            handle_tick(row, ts)
-        elif event_type == 'EXECUTION_REPORT':
-            handle_execution_report(event.get('data', {}))
-        elif event_type == 'SYNC_STATE':
-            handle_sync_state(event.get('data', {}))
-
-    current_logs = session.logs.copy()
-    session.logs.clear()
-    
-    intents = list(session.outbound_queue)
-    session.outbound_queue.clear()
-
-    return {
-        "logs": current_logs,
-        "intents": intents
-    }
-
-
-def get_ui_delta():
-    count = session.ui_timestamps.total_appends - session.last_ui_sync_count
-    if count <= 0:
-        return {
-            "timestamps": [], "mid_prices": [], "ofi": [], "ofi_ema": [],
-            "macro_sma": [], "vwap": [], "bb_mid": [], "bb_upper": [], 
-            "bb_lower": [], "obi": [], "obi_raw": [], "obi_norm": []
-        }
-    
-    # Cap count to avoid asking for more than the buffer holds if sync is delayed
-    count = min(count, session.ui_timestamps.count)
-    
-    res = {
-        "timestamps": session.ui_timestamps.get_window()[-count:].tolist(),
-        "mid_prices": session.ui_mid_prices.get_window()[-count:].tolist(),
-        "ofi": session.ui_ofi.get_window()[-count:].tolist(),
-        "ofi_ema": session.ui_ofi_ema.get_window()[-count:].tolist(),
-        "macro_sma": session.ui_macro_sma.get_window()[-count:].tolist(),
-        "vwap": session.ui_vwap.get_window()[-count:].tolist(),
-        "bb_mid": session.ui_bb_mid.get_window()[-count:].tolist(),
-        "bb_upper": session.ui_bb_upper.get_window()[-count:].tolist(),
-        "bb_lower": session.ui_bb_lower.get_window()[-count:].tolist(),
-        "obi": session.ui_obi.get_window()[-count:].tolist(),
-        "obi_raw": session.ui_obi_raw.get_window()[-count:].tolist(),
-        "obi_norm": session.ui_obi_norm.get_window()[-count:].tolist()
-    }
-    
-    session.last_ui_sync_count = session.ui_timestamps.total_appends
-    return res
-
 def clear_data():
     session.portfolio.reset()
     session.indicators.reset(session.strategy.get_speed_multiplier())
     session.strategy.cooldown_end_time = 0
 
-    session.ui_timestamps.reset()
-    session.ui_mid_prices.reset()
-    session.ui_ofi.reset()
-    session.ui_ofi_ema.reset()
-    session.ui_macro_sma.reset()
-    session.ui_vwap.reset()
-    session.ui_bb_mid.reset()
-    session.ui_bb_upper.reset()
-    session.ui_bb_lower.reset()
-    session.ui_obi.reset()
-    session.ui_obi_raw.reset()
-    session.ui_obi_norm.reset()
+    session.ui_timestamps.count = 0
+    session.ui_timestamps.index = 0
+    session.ui_mid_prices.count = 0
+    session.ui_mid_prices.index = 0
+    session.ui_ofi.count = 0
+    session.ui_ofi.index = 0
+    session.ui_ofi_ema.count = 0
+    session.ui_ofi_ema.index = 0
+    session.ui_macro_sma.count = 0
+    session.ui_macro_sma.index = 0
+    session.ui_vwap.count = 0
+    session.ui_vwap.index = 0
+    session.ui_bb_mid.count = 0
+    session.ui_bb_mid.index = 0
+    session.ui_bb_upper.count = 0
+    session.ui_bb_upper.index = 0
+    session.ui_bb_lower.count = 0
+    session.ui_bb_lower.index = 0
+    session.ui_obi.count = 0
+    session.ui_obi.index = 0
+    session.ui_obi_raw.count = 0
+    session.ui_obi_raw.index = 0
+    session.ui_obi_norm.count = 0
+    session.ui_obi_norm.index = 0
 
     session.last_ui_timestamp = 0.0
     session.last_ui_ask = 0.0
@@ -1435,7 +1294,6 @@ def clear_data():
     session.value_hist.clear()
     session.tick_counter = 0
     session.pending_orders.clear()
-    session.outbound_queue.clear()
     session.canceled_orders.clear()
     session.canceled_orders_total = 0
     session.last_toxicity_state = {
@@ -1453,6 +1311,5 @@ def clear_data():
     session.peak_equity = session.portfolio.initial_capital
     session.current_drawdown_start = None
     session.max_dd_pct = 0.0
-    session.last_ui_sync_count = 0
     session.max_dd_duration = 0.0
     return True
