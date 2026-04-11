@@ -708,10 +708,11 @@ cointegration_warning = not is_cointegrated
 # FIX: If best_lag is >= 0, the feature does not lead. It is useless for anticipation.
 lead_lag_warning = best_lag >= 0 
 
+if lead_lag_warning:
+    print(color_text(f"WARNING: {feature_ticker} does not lead {target_ticker} (lag = {best_lag}). No predictive edge.", YELLOW))
+
 if not is_cointegrated:
     print(color_text(f"VERDICT: NO. Cointegration is weak or absent (Engle-Granger p-value = {p_value:.6f}).", RED))
-elif lead_lag_warning:
-    print(color_text(f"VERDICT: NO. {feature_ticker} does not lead {target_ticker} (lag = {best_lag}). No predictive edge.", RED))
 elif mean_reversion_warning:
     print(color_text(f"VERDICT: NO. Hurst exponent (Static) is {hurst_static:.4f} (close or greater than 0.5), indicating the spread is not reliably mean-reverting.", RED))
     if p_value < 0.05:
@@ -724,7 +725,7 @@ elif half_life_warning:
 elif signal_warning:
     print(color_text(f"VERDICT: NO. Excessive ±2σ Z-score signals ({signal_pct:.2%}) indicate fat tails or an unstable Z-score window, reducing strategy reliability.", RED))
 else:
-    print(color_text(f"VERDICT: YES. {feature_ticker} is cointegrated, lag is acceptable, the spread appears mean-reverting, and the half-life is appropriate.", GREEN))
+    print(color_text(f"VERDICT: YES. {feature_ticker} is cointegrated, the spread appears mean-reverting, and the half-life is appropriate.", GREEN))
 
 print("\n[7/7] Generating Proof Diagrams...")
 
