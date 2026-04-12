@@ -375,12 +375,36 @@ export default function Dashboard() {
                     <div className="font-mono text-gray-700">${metrics.capital?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || '100,000.00'}</div>
                   </div>
                   <div>
-                    <div className="text-xs text-gray-400 uppercase tracking-wider font-semibold mb-1">Position</div>
-                    <div className={`font-mono ${metrics.position > 0 ? 'text-emerald-600' : metrics.position < 0 ? 'text-red-600' : 'text-gray-700'}`}>
-                      {metrics.position > 0 ? '+' : ''}
-                      {metrics.position ? (Number.isInteger(metrics.position) ? metrics.position : metrics.position.toFixed(4)) : 0}
+                    <div className="text-xs text-gray-400 uppercase tracking-wider font-semibold mb-1">Positions</div>
+                    <div className="font-mono text-gray-700 text-sm">
+                      {metrics.positions ? Object.entries(metrics.positions).map(([sym, pos]) => (
+                        <div key={sym} className={(pos as number) > 0 ? 'text-emerald-600' : (pos as number) < 0 ? 'text-red-600' : ''}>
+                          {sym}: {(pos as number) > 0 ? '+' : ''}{Number.isInteger(pos as number) ? (pos as number) : (pos as number).toFixed(4)}
+                        </div>
+                      )) : (
+                        <div className={`font-mono ${metrics.position > 0 ? 'text-emerald-600' : metrics.position < 0 ? 'text-red-600' : 'text-gray-700'}`}>
+                          {metrics.position > 0 ? '+' : ''}
+                          {metrics.position ? (Number.isInteger(metrics.position) ? metrics.position : metrics.position.toFixed(4)) : 0}
+                        </div>
+                      )}
                     </div>
                   </div>
+                  <div>
+                    <div className="text-xs text-gray-400 uppercase tracking-wider font-semibold mb-1">Spread / Z-Score</div>
+                    <div className="font-mono text-gray-700">
+                      {metrics.spread_metrics ? (
+                        <>S: {metrics.spread_metrics.current_spread?.toFixed(2)} | Z: {metrics.spread_metrics.z_score?.toFixed(2)}</>
+                      ) : 'N/A'}
+                    </div>
+                  </div>
+                  {metrics.toxicity_flag !== undefined && (
+                    <div>
+                      <div className="text-xs text-gray-400 uppercase tracking-wider font-semibold mb-1">Toxicity</div>
+                      <div className={`font-mono ${metrics.toxicity_flag ? 'text-red-600' : 'text-emerald-600'}`}>
+                        {metrics.toxicity_flag ? 'TOXIC' : 'NORMAL'}
+                      </div>
+                    </div>
+                  )}
                   <div>
                     <div className="text-xs text-gray-400 uppercase tracking-wider font-semibold mb-1">Unrealized PnL</div>
                     <div className={`font-mono ${(metrics.portfolio_value - 100000) >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
