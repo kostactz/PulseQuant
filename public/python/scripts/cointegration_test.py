@@ -85,7 +85,7 @@ parser.add_argument('--rolling-window', default='800', help='Rolling window size
 parser.add_argument('--sigma-threshold', default='2.0', help='Z-score threshold for trade entry. Can be a float (e.g., 2.5) or "auto".')
 parser.add_argument('--rolling-window-only', action='store_true', help='Only calculate the optimal rolling window and exit.')
 parser.add_argument('--verbose', action='store_true', help='Show verbose progress updates during data fetching.')
-parser.add_argument('--backtest', action='store_true', help='Run an analytical performance backtest accounting for fees.')
+parser.add_argument('--backtest', type=float, nargs='?', const=20.0, default=0.0, help='Run an OOS backtest. Specify OOS percentage (default: 20 if flag is present).')
 parser.add_argument('--taker-fee', type=float, default=0.05, help='Taker fee in percentage (default: 0.05).')
 parser.add_argument('--maker-fee', type=float, default=0.02, help='Maker fee in percentage (default: 0.02).')
 args = parser.parse_args()
@@ -302,14 +302,25 @@ if df.empty:
     print(color_text("ERROR: No aligned data points available after merging. Check input time window and data feeds.", RED))
     sys.exit(1)
 
+oos_pct = args.backtest / 100.0 if args.backtest else 0.0
+if oos_pct > 0:
+    split_idx = int(len(df) * (1 - oos_pct))
+    train_df = df.iloc[:split_idx].copy()
+    test_df = df.iloc[split_idx:].copy()
+    print(f"Data split: {len(train_df)} In-Sample rows, {len(test_df)} Out-of-Sample rows.")
+else:
+    split_idx = len(df)
+    train_df = df.copy()
+    test_df = pd.DataFrame()
+
 # ==============================================================================
 # 3. LEAD-LAG ANALYSIS (CROSS-CORRELATION)
 # ==============================================================================
 print("\n[3/7] Running Lead-Lag Analysis (Cross-Correlation)...")
 
-df['Target_Returns'] = np.log(df['Close'] / df['Close'].shift(1))
-df['Feature_Returns'] = np.log(df['Feature_Price'] / df['Feature_Price'].shift(1))
-df_returns = df.dropna()
+train_df['Target_Returns'] = np.log(train_df['Close'] / train_df['Close'].shift(1))
+train_df['Feature_Returns'] = np.log(train_df['Feature_Price'] / train_df['Feature_Price'].shift(1))
+df_returns = train_df.dropna()
 
 if df_returns.empty:
     print(color_text("ERROR: No valid returns rows after differencing; cannot compute lead-lag correlations.", RED))
@@ -592,12 +603,12 @@ if rolling_window == 'auto' or sigma_threshold == 'auto':
     # Configurable chunk duration for baseline half-life calculation
     baseline_chunk_duration = '3d'
     chunk_size = parse_interval_seconds(baseline_chunk_duration) // parse_interval_seconds(interval)
-    if chunk_size == 0 or chunk_size > len(df):
-        chunk_size = len(df)
+    if chunk_size == 0 or chunk_size > len(train_df):
+        chunk_size = len(train_df)
         
     local_half_lives = []
-    for i in range(0, len(df), chunk_size):
-        chunk = df.iloc[i:i + chunk_size]
+    for i in range(0, len(train_df), chunk_size):
+        chunk = train_df.iloc[i:i + chunk_size]
         if len(chunk) < 100: continue
         X_stat = sm.add_constant(chunk['Feature_Price'])
         Y_stat = chunk['Close']
@@ -614,7 +625,7 @@ if rolling_window == 'auto' or sigma_threshold == 'auto':
         base_hl = 800 # fallback
         print(color_text("      -> Could not compute valid local half-lives. Falling back to default window of 800.", YELLOW))
     
-    optimal_window, optimal_threshold = optimize_parameters(df, base_hl)
+    optimal_window, optimal_threshold = optimize_parameters(train_df, base_hl)
     if rolling_window == 'auto':
         rolling_window = optimal_window
     if sigma_threshold == 'auto':
