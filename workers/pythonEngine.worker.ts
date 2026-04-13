@@ -235,31 +235,21 @@ self.onmessage = async (e: MessageEvent) => {
       }
         } else if (e.data.type === 'GET_UI_DELTA') {
       let results: any = null;
-      let metricsResults: any = null;
       try {
         results = pyodide.runPython(`get_ui_delta()`);
         let jsResults: any = results;
         if (results && typeof results.toJs === 'function') jsResults = results.toJs({ dict_converter: Object.fromEntries });
         
-        postMessage({ type: 'UI_DELTA', data: jsResults });
-        
-        // Also fetch the heavy metrics state less frequently (e.g. at the UI delta interval)
-        metricsResults = pyodide.runPython(`get_metrics()`);
-        let jsMetrics: any = metricsResults;
-        if (metricsResults && typeof metricsResults.toJs === 'function') jsMetrics = metricsResults.toJs({ dict_converter: Object.fromEntries });
-        
         if ((self as any).latestStats) {
-          jsMetrics.system_stats = (self as any).latestStats;
+          jsResults.system_stats = (self as any).latestStats;
         }
-
-        latestMetrics = jsMetrics;
-        postMessage({ type: 'RESULTS', data: latestMetrics });
+        
+        postMessage({ type: 'UI_DELTA', data: jsResults });
       } catch (err) {
-        console.error('[Worker] Get UI delta / metrics error:', err);
+        console.error('[Worker] Get UI delta error:', err);
         postMessage({ type: 'ERROR', error: String(err) });
       } finally {
         if (results && typeof results.destroy === 'function') results.destroy();
-        if (metricsResults && typeof metricsResults.destroy === 'function') metricsResults.destroy();
       }
 } else if (e.data.type === 'CLEAR') {
       try {

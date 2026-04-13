@@ -2,8 +2,6 @@ import { logger } from "../../logger";
 import { MarketDataAdapter, NormalizedTick } from '../types';
 import { getRuntimeCredentials } from '../../security/credentials';
 
-const symbol = 'btcusdt';
-
 export class BinanceAdapter implements MarketDataAdapter {
   private publicWs: WebSocket | null = null;
   private userDataWs: WebSocket | null = null;
@@ -14,18 +12,28 @@ export class BinanceAdapter implements MarketDataAdapter {
 
   private isTestnet: boolean;
   private enableUserData: boolean;
+  private symbols: string[] = ['btcusdt', 'ethusdt'];
   
   constructor(isTestnet: boolean = true, enableUserData: boolean = true) {
     this.isTestnet = isTestnet;
     this.enableUserData = enableUserData;
+    
+    // Initialize maps
+    this.symbols.forEach(sym => {
+      this.obBids.set(sym, []);
+      this.obAsks.set(sym, []);
+      this.lastUpdateId.set(sym, 0);
+      this.buffer.set(sym, []);
+      this.isSnapshotLoaded.set(sym, false);
+      this.accumulatedTradeVol.set(sym, 0);
+      this.prevBids.set(sym, []);
+      this.prevAsks.set(sym, []);
+    });
   }
   
   private get restBaseUrl(): string {
-    // Determine if we are running in the browser
     const isBrowser = typeof window !== 'undefined';
-    
     if (isBrowser) {
-      // Use Next.js rewrites to avoid CORS issues
       return this.isTestnet ? '/binance-api/testnet' : '/binance-api/mainnet';
     } else {
       return this.isTestnet ? 'https://testnet.binancefuture.com' : 'https://fapi.binance.com';
@@ -37,19 +45,19 @@ export class BinanceAdapter implements MarketDataAdapter {
   }
   
   // Order Book State
-  private obBids: [number, number][] = [];
-  private obAsks: [number, number][] = [];
-  private lastUpdateId = 0;
-  private buffer: any[] = [];
-  private isSnapshotLoaded = false;
-  private accumulatedTradeVol = 0;
+  private obBids: Map<string, [number, number][]> = new Map();
+  private obAsks: Map<string, [number, number][]> = new Map();
+  private lastUpdateId: Map<string, number> = new Map();
+  private buffer: Map<string, any[]> = new Map();
+  private isSnapshotLoaded: Map<string, boolean> = new Map();
+  private accumulatedTradeVol: Map<string, number> = new Map();
   
   // Real-time top of book
-  private latestBookTicker: { bid: number, ask: number, bidQty: number, askQty: number, ts: number } | null = null;
+  private latestBookTicker: Map<string, { bid: number, ask: number, bidQty: number, askQty: number, ts: number }> = new Map();
   
   // Previous top of book for OFI
-  private prevBids: [number, number][] = [];
-  private prevAsks: [number, number][] = [];
+  private prevBids: Map<string, [number, number][]> = new Map();
+  private prevAsks: Map<string, [number, number][]> = new Map();
 
   // Listen Key State
   private listenKey: string | null = null;
@@ -83,11 +91,12 @@ export class BinanceAdapter implements MarketDataAdapter {
   private connectPublic() {
     if (this.publicWs) return;
 
-    this.publicWs = new WebSocket(`${this.wsBaseUrl}/stream?streams=${symbol}@bookTicker/${symbol}@depth@100ms/${symbol}@aggTrade`);
+    const streams = this.symbols.map(s => `${s}@bookTicker/${s}@depth@100ms/${s}@aggTrade`).join('/');
+    this.publicWs = new WebSocket(`${this.wsBaseUrl}/stream?streams=${streams}`);
 
     this.publicWs.onopen = () => {
-      logger.binance('Public WS Connected');
-      this.fetchSnapshot(symbol);
+      logger.binance('Public WS Connected for streams: ' + this.symbols.join(', '));
+      this.symbols.forEach(sym => this.fetchSnapshot(sym));
     };
 
     this.publicWs.onmessage = (event) => {
@@ -95,32 +104,41 @@ export class BinanceAdapter implements MarketDataAdapter {
       const stream = raw.stream;
       const data = raw.data;
       
+      if (!stream) return;
+      
+      const symbol = stream.split('@')[0];
+      
       if (stream.includes('@aggTrade')) {
-        this.accumulatedTradeVol += parseFloat(data.q);
+        const vol = this.accumulatedTradeVol.get(symbol) || 0;
+        this.accumulatedTradeVol.set(symbol, vol + parseFloat(data.q));
         return;
       }
       
       if (stream.includes('@bookTicker')) {
-        this.latestBookTicker = {
+        const ticker = {
           bid: parseFloat(data.b),
           bidQty: parseFloat(data.B),
           ask: parseFloat(data.a),
           askQty: parseFloat(data.A),
           ts: data.E || data.T || Date.now()
         };
+        this.latestBookTicker.set(symbol, ticker);
+        
         // Emit tick on bookTicker if we have depth loaded
-        if (this.isSnapshotLoaded) {
-          this.emitTick(this.latestBookTicker.ts);
+        if (this.isSnapshotLoaded.get(symbol)) {
+          this.emitTick(symbol, ticker.ts);
         }
         return;
       }
 
       if (stream.includes('@depth')) {
-        if (!this.isSnapshotLoaded) {
-          this.buffer.push(data);
+        if (!this.isSnapshotLoaded.get(symbol)) {
+          const buf = this.buffer.get(symbol) || [];
+          buf.push(data);
+          this.buffer.set(symbol, buf);
           return;
         }
-        this.processDepthUpdate(data);
+        this.processDepthUpdate(symbol, data);
       }
     };
 
@@ -169,7 +187,6 @@ export class BinanceAdapter implements MarketDataAdapter {
     try {
       this.listenKey = await this.fetchListenKey();
       
-      // Keep alive every 30 minutes
       if (this.listenKeyInterval) clearInterval(this.listenKeyInterval);
       this.listenKeyInterval = setInterval(() => this.keepAliveListenKey(), 30 * 60 * 1000);
 
@@ -180,12 +197,13 @@ export class BinanceAdapter implements MarketDataAdapter {
         if (this.syncStateCallback) {
           try {
             const [openOrders, accountInfo] = await Promise.all([
-              this.fetchOpenOrders(symbol),
+              // We could fetch open orders for all symbols here, but this might be costly, or we can just fetch all open orders without symbol
+              this.fetchOpenOrders(''),
               this.fetchAccountInformation()
             ]);
             
             let capital = null;
-            let position = null;
+            let positions: Record<string, number> = {};
             
             if (accountInfo && accountInfo.assets && accountInfo.positions) {
               const usdtAsset = accountInfo.assets.find((a: any) => a.asset === 'USDT');
@@ -193,16 +211,17 @@ export class BinanceAdapter implements MarketDataAdapter {
                 capital = parseFloat(usdtAsset.marginBalance);
               }
               
-              const btcPosition = accountInfo.positions.find((p: any) => p.symbol === symbol.toUpperCase());
-              if (btcPosition) {
-                position = parseFloat(btcPosition.positionAmt);
-              }
+              accountInfo.positions.forEach((p: any) => {
+                if (parseFloat(p.positionAmt) !== 0) {
+                  positions[p.symbol.toLowerCase()] = parseFloat(p.positionAmt);
+                }
+              });
             }
 
             this.syncStateCallback({ 
               open_orders: openOrders,
               capital: capital !== null ? capital : undefined,
-              position: position !== null ? position : undefined
+              positions: Object.keys(positions).length > 0 ? positions : undefined
             });
           } catch (err) {
             logger.error('Error fetching data for sync:', err);
@@ -216,10 +235,9 @@ export class BinanceAdapter implements MarketDataAdapter {
         if (data.e === 'ORDER_TRADE_UPDATE') {
           const order = data.o;
           if (this.executionReportCallback) {
-            // Normalize report for engine
             this.executionReportCallback({
               clientOrderId: order.c,
-              status: order.X, // NEW, PARTIALLY_FILLED, FILLED, CANCELED, EXPIRED, REJECTED
+              status: order.X,
               lastFilledQuantity: order.l,
               lastFilledPrice: order.L,
               transactionTime: data.E,
@@ -240,7 +258,7 @@ export class BinanceAdapter implements MarketDataAdapter {
       if (err.message && (err.message.includes('-2015') || err.message.includes('Invalid API-key'))) {
         logger.error('Fatal auth error, stopping user data stream reconnects. Please check your API keys or IS_TESTNET configuration.');
         this.hasAuthError = true;
-        return; // Do not attempt to reconnect
+        return;
       }
       this.handleReconnect();
     }
@@ -252,8 +270,10 @@ export class BinanceAdapter implements MarketDataAdapter {
     
     this.reconnectTimeout = setTimeout(() => {
       logger.binance('Attempting to reconnect...');
-      this.isSnapshotLoaded = false;
-      this.buffer = [];
+      this.symbols.forEach(sym => {
+        this.isSnapshotLoaded.set(sym, false);
+        this.buffer.set(sym, []);
+      });
       this.connect();
     }, 3000);
   }
@@ -290,67 +310,78 @@ export class BinanceAdapter implements MarketDataAdapter {
 
   private async fetchSnapshot(symbol: string) {
     try {
-      const res = await fetch(`${this.restBaseUrl}/fapi/v1/depth?symbol=${symbol}&limit=1000`);
+      const res = await fetch(`${this.restBaseUrl}/fapi/v1/depth?symbol=${symbol.toUpperCase()}&limit=1000`);
       const snap = await res.json();
       
-      this.lastUpdateId = snap.lastUpdateId;
-      this.obBids = [];
-      this.obAsks = [];
+      this.lastUpdateId.set(symbol, snap.lastUpdateId);
+      const bids: [number, number][] = [];
+      const asks: [number, number][] = [];
       
-      snap.bids.forEach((b: string[]) => this.obBids.push([parseFloat(b[0]), parseFloat(b[1])]));
-      snap.asks.forEach((a: string[]) => this.obAsks.push([parseFloat(a[0]), parseFloat(a[1])]));
+      snap.bids.forEach((b: string[]) => bids.push([parseFloat(b[0]), parseFloat(b[1])]));
+      snap.asks.forEach((a: string[]) => asks.push([parseFloat(a[0]), parseFloat(a[1])]));
       
-      this.obBids.sort((a, b) => b[0] - a[0]); 
-      this.obAsks.sort((a, b) => a[0] - b[0]); 
+      bids.sort((a, b) => b[0] - a[0]); 
+      asks.sort((a, b) => a[0] - b[0]); 
       
-      this.isSnapshotLoaded = true;
+      this.obBids.set(symbol, bids);
+      this.obAsks.set(symbol, asks);
+      
+      this.isSnapshotLoaded.set(symbol, true);
 
-      const validEvents = this.buffer.filter(e => e.u > this.lastUpdateId);
-      validEvents.forEach(e => this.processDepthUpdate(e));
-      this.buffer = [];
+      const buf = this.buffer.get(symbol) || [];
+      const lastId = snap.lastUpdateId;
+      const validEvents = buf.filter(e => e.u > lastId);
+      validEvents.forEach(e => this.processDepthUpdate(symbol, e));
+      this.buffer.set(symbol, []);
     } catch (error) {
-      logger.error('Failed to fetch snapshot:', error);
+      logger.error(`Failed to fetch snapshot for ${symbol}:`, error);
       this.handleReconnect();
     }
   }
 
-  private processDepthUpdate(event: any) {
-    if (event.u <= this.lastUpdateId) return;
+  private processDepthUpdate(symbol: string, event: any) {
+    const lastId = this.lastUpdateId.get(symbol) || 0;
+    if (event.u <= lastId) return;
+
+    const bids = this.obBids.get(symbol) || [];
+    const asks = this.obAsks.get(symbol) || [];
 
     event.b.forEach((b: string[]) => {
-      this.updateBook(this.obBids, parseFloat(b[0]), parseFloat(b[1]), true); 
+      this.updateBook(bids, parseFloat(b[0]), parseFloat(b[1]), true); 
     });
 
     event.a.forEach((a: string[]) => {
-      this.updateBook(this.obAsks, parseFloat(a[0]), parseFloat(a[1]), false); 
+      this.updateBook(asks, parseFloat(a[0]), parseFloat(a[1]), false); 
     });
 
-    this.lastUpdateId = event.u;
-    this.emitTick(event.E || Date.now());
+    this.obBids.set(symbol, bids);
+    this.obAsks.set(symbol, asks);
+    this.lastUpdateId.set(symbol, event.u);
+    this.emitTick(symbol, event.E || Date.now());
   }
 
-  private emitTick(timestamp: number) {
+  private emitTick(symbol: string, timestamp: number) {
     if (!this.tickCallback) return;
 
-    const sortedBids = this.obBids;
-    const sortedAsks = this.obAsks;
+    const sortedBids = this.obBids.get(symbol) || [];
+    const sortedAsks = this.obAsks.get(symbol) || [];
 
     if (sortedBids.length === 0 || sortedAsks.length === 0) return;
 
-    // Use bookTicker for top of book if available, otherwise fallback to depth array
     let topBidPrice = sortedBids[0][0];
     let topBidQty = sortedBids[0][1];
     let topAskPrice = sortedAsks[0][0];
     let topAskQty = sortedAsks[0][1];
 
-    if (this.latestBookTicker) {
-      topBidPrice = this.latestBookTicker.bid;
-      topBidQty = this.latestBookTicker.bidQty;
-      topAskPrice = this.latestBookTicker.ask;
-      topAskQty = this.latestBookTicker.askQty;
+    const ticker = this.latestBookTicker.get(symbol);
+    if (ticker) {
+      topBidPrice = ticker.bid;
+      topBidQty = ticker.bidQty;
+      topAskPrice = ticker.ask;
+      topAskQty = ticker.askQty;
     }
 
-    const GROUP_SIZE = 10;
+    const GROUP_SIZE = symbol === 'ethusdt' ? 1 : 10;
     const LIMIT = 20;
 
     const groupLevels = (levels: [number, number][], isAsk: boolean, groupSize: number, limit: number) => {
@@ -388,12 +419,10 @@ export class BinanceAdapter implements MarketDataAdapter {
     let deltaBid = 0;
     let deltaAsk = 0;
     
-    // Create copies of top 20 levels for the engine
     const exportedBids = sortedBids.slice(0, 20).map(x => [...x] as [number, number]);
     const exportedAsks = sortedAsks.slice(0, 20).map(x => [...x] as [number, number]);
 
-    // Force top level to match bookTicker to prevent misalignment in Deep OBI calculations
-    if (this.latestBookTicker) {
+    if (ticker) {
       if (exportedBids.length > 0 && exportedBids[0][0] === topBidPrice) {
         exportedBids[0][1] = topBidQty;
       }
@@ -402,21 +431,24 @@ export class BinanceAdapter implements MarketDataAdapter {
       }
     }
 
-    if (this.prevBids.length > 0 && this.prevAsks.length > 0) {
-      for (let i = 0; i < Math.min(OFI_LEVELS, exportedBids.length, this.prevBids.length); i++) {
+    const prevBids = this.prevBids.get(symbol) || [];
+    const prevAsks = this.prevAsks.get(symbol) || [];
+
+    if (prevBids.length > 0 && prevAsks.length > 0) {
+      for (let i = 0; i < Math.min(OFI_LEVELS, exportedBids.length, prevBids.length); i++) {
         const weight = 1.0 - (i * 0.2); 
         const [currPrice, currQty] = exportedBids[i];
-        const [prevPrice, prevQty] = this.prevBids[i];
+        const [prevPrice, prevQty] = prevBids[i];
 
         if (currPrice > prevPrice) deltaBid += currQty * weight;
         else if (currPrice === prevPrice) deltaBid += (currQty - prevQty) * weight;
         else deltaBid -= prevQty * weight;
       }
 
-      for (let i = 0; i < Math.min(OFI_LEVELS, exportedAsks.length, this.prevAsks.length); i++) {
+      for (let i = 0; i < Math.min(OFI_LEVELS, exportedAsks.length, prevAsks.length); i++) {
         const weight = 1.0 - (i * 0.2);
         const [currPrice, currQty] = exportedAsks[i];
-        const [prevPrice, prevQty] = this.prevAsks[i];
+        const [prevPrice, prevQty] = prevAsks[i];
 
         if (currPrice < prevPrice) deltaAsk += currQty * weight;
         else if (currPrice === prevPrice) deltaAsk += (currQty - prevQty) * weight;
@@ -424,10 +456,13 @@ export class BinanceAdapter implements MarketDataAdapter {
       }
     }
 
-    this.prevBids = exportedBids.slice(0, OFI_LEVELS);
-    this.prevAsks = exportedAsks.slice(0, OFI_LEVELS);
+    this.prevBids.set(symbol, exportedBids.slice(0, OFI_LEVELS));
+    this.prevAsks.set(symbol, exportedAsks.slice(0, OFI_LEVELS));
+
+    const accumulatedTradeVol = this.accumulatedTradeVol.get(symbol) || 0;
 
     const tick: NormalizedTick = {
+      symbol,
       timestamp,
       bid: topBidPrice,
       ask: topAskPrice,
@@ -435,13 +470,13 @@ export class BinanceAdapter implements MarketDataAdapter {
       ask_vol: topAskQty,
       delta_bid: deltaBid,
       delta_ask: deltaAsk,
-      trade_volume: this.accumulatedTradeVol,
+      trade_volume: accumulatedTradeVol,
       depth: { bids: groupedBids, asks: groupedAsks },
       bids: exportedBids,
       asks: exportedAsks
     };
 
-    this.accumulatedTradeVol = 0;
+    this.accumulatedTradeVol.set(symbol, 0);
     this.tickCallback(tick);
   }
 
@@ -466,7 +501,6 @@ export class BinanceAdapter implements MarketDataAdapter {
 
     const signature = await globalThis.crypto.subtle.sign('HMAC', this.cachedCryptoKey, msgData);
     
-    // Convert buffer to hex string
     return Array.from(new Uint8Array(signature))
       .map(b => b.toString(16).padStart(2, '0'))
       .join('');
@@ -488,7 +522,6 @@ export class BinanceAdapter implements MarketDataAdapter {
     if (price) params.append('price', price.toString());
     if (type === 'LIMIT') params.append('timeInForce', timeInForce || 'GTC');
 
-    // For POST fapi/v1/order, we must send signature
     const queryString = params.toString();
     const signature = await this.signHMAC(queryString);
     params.append('signature', signature);
@@ -570,7 +603,9 @@ export class BinanceAdapter implements MarketDataAdapter {
     if (!this.apiKey || !this.privateKey) return [];
     
     const params = new URLSearchParams();
-    params.append('symbol', symbol.toUpperCase());
+    if (symbol) {
+      params.append('symbol', symbol.toUpperCase());
+    }
     params.append('timestamp', Date.now().toString());
 
     const queryString = params.toString();
@@ -611,10 +646,34 @@ export class BinanceAdapter implements MarketDataAdapter {
 
   subscribe(symbol: string): void {
     console.log(`[BinanceAdapter] Subscribed to ${symbol}`);
+    if (!this.symbols.includes(symbol.toLowerCase())) {
+      this.symbols.push(symbol.toLowerCase());
+      // Re-init state for new symbol
+      const sym = symbol.toLowerCase();
+      this.obBids.set(sym, []);
+      this.obAsks.set(sym, []);
+      this.lastUpdateId.set(sym, 0);
+      this.buffer.set(sym, []);
+      this.isSnapshotLoaded.set(sym, false);
+      this.accumulatedTradeVol.set(sym, 0);
+      this.prevBids.set(sym, []);
+      this.prevAsks.set(sym, []);
+      
+      // We would need to reconnect or send a sub message, but since Binance WS uses query string streams upon connect,
+      // it's easier to drop and reconnect public.
+      if (this.publicWs) {
+        this.publicWs.close(); // Will trigger reconnect
+      }
+    }
   }
 
   unsubscribe(symbol: string): void {
     console.log(`[BinanceAdapter] Unsubscribed from ${symbol}`);
+    const sym = symbol.toLowerCase();
+    this.symbols = this.symbols.filter(s => s !== sym);
+    if (this.publicWs) {
+      this.publicWs.close(); // Will trigger reconnect
+    }
   }
 
   onExecutionReport(callback: (report: any) => void): void {

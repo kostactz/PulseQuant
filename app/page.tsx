@@ -84,9 +84,6 @@ export default function Dashboard() {
   const [chartType, setChartType] = useState<'line' | 'candlestick'>('line');
   const [autoScale, setAutoScale] = useState(true);
   const [followLive, setFollowLive] = useState(true);
-  const [visibleSeries, setVisibleSeries] = useState({
-    ofi: true, ema: true, obi: true, vwap: true, macroSma: true, bb: true
-  });
   const chartRef = useRef<any>(null);
 
   const [uiRefreshInterval, setUiRefreshInterval] = useState(500);
@@ -124,7 +121,6 @@ export default function Dashboard() {
   };
 
   useEffect(() => {
-    // Poll the python engine for UI deltas
     const interval = setInterval(() => {
       if (isReady && isPlaying) {
         getUIDelta();
@@ -139,6 +135,9 @@ export default function Dashboard() {
     setIsAutoTrading(newState);
     setAutoTrade(newState);
   };
+
+  // State data is now from uiDelta directly or fallback to metrics for backwards compatibility
+  const currentState = uiDelta || metrics;
 
   return (
     <main className="min-h-screen bg-gray-50 text-gray-900 p-6 font-sans">
@@ -173,7 +172,7 @@ export default function Dashboard() {
         <header className="flex items-center justify-between border-b border-gray-200 pb-4">
           <div>
             <h1 className="text-2xl font-semibold tracking-tight">PulseQuant Dashboard</h1>
-            <p className="text-sm text-gray-500">Python Pandas Engine via Pyodide WASM</p>
+            <p className="text-sm text-gray-500">Stat Arb Engine via Pyodide WASM</p>
           </div>
           <div className="flex items-center gap-4">
             {tradingMode !== 'PAPER' && (
@@ -348,9 +347,9 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {metrics ? (
+        {currentState ? (
           <div className="space-y-6 animate-in fade-in duration-700">
-            {/* Paper Trading Simulator Panel */}
+            {/* Stat Arb Trading Simulator Panel */}
             <div className="bg-white border border-gray-200 shadow-sm p-5 rounded-xl">
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
                 <div className="flex items-center gap-3">
@@ -364,7 +363,7 @@ export default function Dashboard() {
                        'Binance Mainnet Engine'}
                     </h2>
                     <div className="text-2xl font-bold text-gray-900 tracking-tight">
-                      ${metrics.portfolio_value?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || '100,000.00'}
+                      ${currentState.portfolio_value?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || '100,000.00'}
                     </div>
                   </div>
                 </div>
@@ -372,44 +371,30 @@ export default function Dashboard() {
                 <div className="flex flex-wrap items-center gap-6">
                   <div>
                     <div className="text-xs text-gray-400 uppercase tracking-wider font-semibold mb-1">Cash</div>
-                    <div className="font-mono text-gray-700">${metrics.capital?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || '100,000.00'}</div>
+                    <div className="font-mono text-gray-700">${currentState.capital?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || '100,000.00'}</div>
                   </div>
                   <div>
-                    <div className="text-xs text-gray-400 uppercase tracking-wider font-semibold mb-1">Positions</div>
-                    <div className="font-mono text-gray-700 text-sm">
-                      {metrics.positions ? Object.entries(metrics.positions).map(([sym, pos]) => (
-                        <div key={sym} className={(pos as number) > 0 ? 'text-emerald-600' : (pos as number) < 0 ? 'text-red-600' : ''}>
-                          {sym}: {(pos as number) > 0 ? '+' : ''}{Number.isInteger(pos as number) ? (pos as number) : (pos as number).toFixed(4)}
-                        </div>
-                      )) : (
-                        <div className={`font-mono ${metrics.position > 0 ? 'text-emerald-600' : metrics.position < 0 ? 'text-red-600' : 'text-gray-700'}`}>
-                          {metrics.position > 0 ? '+' : ''}
-                          {metrics.position ? (Number.isInteger(metrics.position) ? metrics.position : metrics.position.toFixed(4)) : 0}
-                        </div>
-                      )}
+                    <div className="text-xs text-gray-400 uppercase tracking-wider font-semibold mb-1">Net Delta</div>
+                    <div className={`font-mono ${currentState.net_delta > 0 ? 'text-emerald-600' : currentState.net_delta < 0 ? 'text-red-600' : 'text-gray-700'}`}>
+                      {currentState.net_delta > 0 ? '+' : ''}{currentState.net_delta?.toFixed(4) || '0.00'}
                     </div>
                   </div>
                   <div>
-                    <div className="text-xs text-gray-400 uppercase tracking-wider font-semibold mb-1">Spread / Z-Score</div>
+                    <div className="text-xs text-gray-400 uppercase tracking-wider font-semibold mb-1">Hedge Ratio (Beta)</div>
                     <div className="font-mono text-gray-700">
-                      {metrics.spread_metrics ? (
-                        <>S: {metrics.spread_metrics.current_spread?.toFixed(2)} | Z: {metrics.spread_metrics.z_score?.toFixed(2)}</>
-                      ) : 'N/A'}
+                      {currentState.spread_metrics?.beta?.toFixed(4) || 'N/A'}
                     </div>
                   </div>
-                  {metrics.toxicity_flag !== undefined && (
-                    <div>
-                      <div className="text-xs text-gray-400 uppercase tracking-wider font-semibold mb-1">Toxicity</div>
-                      <div className={`font-mono ${metrics.toxicity_flag ? 'text-red-600' : 'text-emerald-600'}`}>
-                        {metrics.toxicity_flag ? 'TOXIC' : 'NORMAL'}
-                      </div>
-                    </div>
-                  )}
                   <div>
-                    <div className="text-xs text-gray-400 uppercase tracking-wider font-semibold mb-1">Unrealized PnL</div>
-                    <div className={`font-mono ${(metrics.portfolio_value - 100000) >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
-                      {(metrics.portfolio_value - 100000) >= 0 ? '+' : ''}
-                      ${(metrics.portfolio_value - 100000).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    <div className="text-xs text-gray-400 uppercase tracking-wider font-semibold mb-1">Toxicity Flag</div>
+                    <div className={`font-mono ${currentState.toxicity_flag ? 'text-red-600 font-bold' : 'text-emerald-600'}`}>
+                      {currentState.toxicity_flag ? 'TOXIC' : 'SAFE'}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-gray-400 uppercase tracking-wider font-semibold mb-1">Execution State</div>
+                    <div className="font-mono text-gray-700">
+                      {currentState.execution_state || 'IDLE'}
                     </div>
                   </div>
                 </div>
@@ -427,21 +412,6 @@ export default function Dashboard() {
                     <span className="text-gray-400 text-xs ml-1 font-medium">bps</span>
                   </div>
                   <button
-                    onClick={() => executeTrade('buy', tradeSizeBps)}
-                    disabled={!isReady || isAutoTrading}
-                    className="flex items-center gap-1 px-3 py-2 rounded-lg font-medium bg-emerald-100 text-emerald-600 hover:bg-emerald-200 transition-colors disabled:opacity-50"
-                  >
-                    <ArrowUpRight className="w-4 h-4" /> Buy
-                  </button>
-                  <button
-                    onClick={() => executeTrade('sell', tradeSizeBps)}
-                    disabled={!isReady || isAutoTrading}
-                    className="flex items-center gap-1 px-3 py-2 rounded-lg font-medium bg-red-100 text-red-600 hover:bg-red-200 transition-colors disabled:opacity-50"
-                  >
-                    <ArrowDownRight className="w-4 h-4" /> Sell
-                  </button>
-                  <div className="w-px h-8 bg-gray-200 mx-2"></div>
-                  <button
                     onClick={handleAutoTradeToggle}
                     disabled={!isReady}
                     className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-colors disabled:opacity-50 ${
@@ -458,16 +428,17 @@ export default function Dashboard() {
               {/* Strategy Settings */}
               <div className="mt-4 pt-4 border-t border-gray-200 flex flex-wrap items-center justify-between gap-4">
                 <div className="flex items-center gap-3">
-                  <span className="text-sm font-medium text-gray-500">Strategy Style:</span>
-                  <select 
-                    className="bg-gray-50 border border-gray-200 text-sm rounded-lg px-3 py-1.5 text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                    value={strategyStyle}
-                    onChange={(e) => handleStrategyChange(e.target.value, strategySpeed)}
-                  >
-                    <option value="conservative">Conservative</option>
-                    <option value="moderate">Moderate</option>
-                    <option value="aggressive">Aggressive</option>
-                  </select>
+                  <span className="text-sm font-medium text-gray-500">Positions:</span>
+                  <div className="flex gap-4">
+                    {currentState.positions && Object.entries(currentState.positions).map(([sym, pos]) => (
+                      <div key={sym} className="flex gap-2 items-center bg-gray-50 px-2 py-1 rounded-md border border-gray-200">
+                        <span className="text-xs font-semibold text-gray-500">{sym}</span>
+                        <span className={`font-mono text-sm ${(pos as number) > 0 ? 'text-emerald-600' : (pos as number) < 0 ? 'text-red-600' : 'text-gray-700'}`}>
+                          {(pos as number) > 0 ? '+' : ''}{(pos as number).toFixed(4)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
                 </div>
                 <div className="flex items-center gap-3">
                   <span className="text-sm font-medium text-gray-500">Signal Speed:</span>
@@ -489,112 +460,57 @@ export default function Dashboard() {
               
               <div className="bg-white border border-gray-200 shadow-sm p-4 rounded-xl flex items-center gap-4">
                 <div className="p-3 bg-emerald-100 text-emerald-600 rounded-lg hidden sm:block">
-                  <DollarSign className="w-6 h-6" />
+                  <Activity className="w-6 h-6" />
                 </div>
                 <div>
-                  <p className="text-sm text-gray-500 font-medium">Last Price</p>
-                  <p className="text-xl font-semibold font-mono">${metrics.last_micro_price?.toFixed(2) ?? '0.00'}</p>
+                  <p className="text-sm text-gray-500 font-medium">Spread</p>
+                  <p className="text-xl font-semibold font-mono">{currentState.spread_metrics?.current_spread?.toFixed(4) ?? '0.00'}</p>
                 </div>
               </div>
 
               <div className="bg-white border border-gray-200 shadow-sm p-4 rounded-xl flex items-center gap-4">
                 <div className="p-3 bg-purple-100 text-purple-600 rounded-lg hidden sm:block">
-                  <Activity className="w-6 h-6" />
+                  <TrendingUp className="w-6 h-6" />
                 </div>
                 <div>
-                  <p className="text-sm text-gray-500 font-medium">Data Points</p>
-                  <p className="text-xl font-semibold font-mono">{metrics.tick_count ?? 0}</p>
+                  <p className="text-sm text-gray-500 font-medium">Z-Score</p>
+                  <p className={`text-xl font-semibold font-mono ${currentState.spread_metrics?.z_score > 2 ? 'text-red-600' : currentState.spread_metrics?.z_score < -2 ? 'text-emerald-600' : 'text-gray-900'}`}>
+                    {currentState.spread_metrics?.z_score?.toFixed(2) ?? '0.00'}
+                  </p>
                 </div>
               </div>
 
               <div className="bg-white border border-gray-200 shadow-sm p-4 rounded-xl flex items-center gap-4">
                 <div className="p-3 bg-pink-100 text-pink-600 rounded-lg hidden sm:block">
-                  <Activity className="w-6 h-6" />
+                  <DollarSign className="w-6 h-6" />
                 </div>
                 <div>
-                  <p className="text-sm text-gray-500 font-medium">OBI (Z-Score)</p>
+                  <p className="text-sm text-gray-500 font-medium">Target Price</p>
                   <p className="text-xl font-semibold font-mono">
-                    {metrics.last_toxicity_state?.obi?.toFixed(2) ?? "0.00"}
+                    {currentState.spread_metrics?.target_price?.toFixed(2) ?? "0.00"}
                   </p>
                 </div>
               </div>
 
               <div className="bg-white border border-gray-200 shadow-sm p-4 rounded-xl flex items-center gap-4">
                 <div className="p-3 bg-blue-100 text-blue-600 rounded-lg hidden sm:block">
-                  <Zap className="w-6 h-6" />
+                  <DollarSign className="w-6 h-6" />
                 </div>
                 <div className="flex flex-col">
-                  <p className="text-sm text-gray-500 font-medium">Engine Perf</p>
-                  <p className="text-xl font-semibold font-mono">{metrics.system_stats?.mps ?? '0.0'} <span className="text-sm text-gray-400 font-sans font-normal">msg/s</span></p>
-                  <p className="text-[10px] text-gray-400 mt-1">Net: {metrics.system_stats?.netLat ?? '0.0'}ms | Sys: {metrics.system_stats?.sysLat ?? '0.0'}ms</p>
+                  <p className="text-sm text-gray-500 font-medium">Feature Price</p>
+                  <p className="text-xl font-semibold font-mono">{currentState.spread_metrics?.feature_price?.toFixed(2) ?? '0.00'}</p>
                 </div>
               </div>
             </div>
 
-            {/* Trading Analytics */}
-            <div className="grid grid-cols-2 md:grid-cols-7 gap-4">
-              <div className="bg-white border border-gray-200 shadow-sm p-4 rounded-xl flex flex-col justify-center">
-                <p className="text-xs text-gray-500 font-medium uppercase tracking-wider mb-1">Profit Factor</p>
-                <p className="text-xl font-semibold font-mono">{metrics.analytics?.profit_factor?.toFixed(2) ?? '0.00'}</p>
-              </div>
-              <div className="bg-white border border-gray-200 shadow-sm p-4 rounded-xl flex flex-col justify-center">
-                <p className="text-xs text-gray-500 font-medium uppercase tracking-wider mb-1">Hit Ratio</p>
-                <p className="text-xl font-semibold font-mono">{((metrics.analytics?.hit_ratio ?? 0) * 100).toFixed(1)}%</p>
-              </div>
-              <div className="bg-white border border-gray-200 shadow-sm p-4 rounded-xl flex flex-col justify-center">
-                <p className="text-xs text-gray-500 font-medium uppercase tracking-wider mb-1">Maker Fill</p>
-                <p className="text-xl font-semibold font-mono">{((metrics.analytics?.maker_fill_rate ?? 0) * 100).toFixed(1)}%</p>
-              </div>
-              <div className="bg-white border border-gray-200 shadow-sm p-4 rounded-xl flex flex-col justify-center">
-                <p className="text-xs text-gray-500 font-medium uppercase tracking-wider mb-1">Avg Hold Time</p>
-                <p className="text-xl font-semibold font-mono">{(metrics.analytics?.avg_holding_time / 1000)?.toFixed(1) ?? '0.0'}s</p>
-              </div>
-              <div className="bg-white border border-gray-200 shadow-sm p-4 rounded-xl flex flex-col justify-center">
-                <p className="text-xs text-gray-500 font-medium uppercase tracking-wider mb-1">Drawdown (Cur/Max)</p>
-                <p className="text-lg font-semibold font-mono text-red-600">
-                  -{((metrics.current_dd_pct ?? 0) * 100).toFixed(2)}% <span className="text-gray-400 text-sm">/ -{((metrics.max_dd_pct ?? 0) * 100).toFixed(2)}%</span>
-                </p>
-                <p className="text-[10px] text-gray-400 mt-1">MDD Duration: {((metrics.max_dd_duration ?? 0) / 1000).toFixed(1)}s</p>
-              </div>
-              <div className="bg-white border border-gray-200 shadow-sm p-4 rounded-xl flex flex-col justify-center">
-                <p className="text-xs text-gray-500 font-medium uppercase tracking-wider mb-1">Pending Makers</p>
-                <p className="text-xl font-semibold font-mono">{metrics.pending_order_count ?? 0}</p>
-                <p className="text-[10px] text-gray-400 mt-1">Resting limit orders</p>
-              </div>
-              <div className="bg-white border border-gray-200 shadow-sm p-4 rounded-xl flex flex-col justify-center">
-                <p className="text-xs text-gray-500 font-medium uppercase tracking-wider mb-1">Microstructure Stops</p>
-                <p className="text-xl font-semibold font-mono text-amber-600">{metrics.canceled_orders_total ?? 0}</p>
-                <p className="text-[10px] text-gray-400 mt-1">Rate: {((metrics.cancellation_rate ?? 0) * 100).toFixed(1)}%</p>
-              </div>
-            </div>
+            {/* Trading Analytics - Simplified for now, or adapt as needed */}
 
             <div className="bg-white border border-gray-200 shadow-sm p-5 rounded-xl h-[500px]">
 
               <div className="flex flex-col xl:flex-row xl:items-center justify-between mb-4 gap-4">
                 <div className="flex flex-col gap-2">
-                  <h2 className="text-sm font-medium text-gray-500">Price, VWAP, Macro SMA & OFI</h2>
+                  <h2 className="text-sm font-medium text-gray-500">Stat Arb Spread & Z-Score</h2>
                   <div className="flex flex-wrap items-center gap-2">
-                    <select
-                      className="text-xs bg-gray-50 border border-gray-200 rounded px-2 py-1 outline-none focus:border-blue-400"
-                      value={timeframe === null ? 'live' : timeframe}
-                      onChange={(e) => setTimeframe(e.target.value === 'live' ? null : Number(e.target.value))}
-                    >
-                      <option value="live">Live (Tick)</option>
-                      <option value="1000">1s</option>
-                      <option value="5000">5s</option>
-                      <option value="15000">15s</option>
-                      <option value="60000">1m</option>
-                      <option value="300000">5m</option>
-                      <option value="900000">15m</option>
-                    </select>
-                    <select
-                      className="text-xs bg-gray-50 border border-gray-200 rounded px-2 py-1 outline-none focus:border-blue-400"
-                      value={chartType}
-                      onChange={(e) => setChartType(e.target.value as any)}
-                    >
-                      <option value="line">Line</option>
-                      <option value="candlestick">Candles</option>
-                    </select>
                     <label className="text-xs flex items-center gap-1 cursor-pointer bg-gray-50 border border-gray-200 rounded px-2 py-1 hover:bg-gray-100 select-none">
                       <input type="checkbox" checked={autoScale} onChange={e => setAutoScale(e.target.checked)} className="accent-blue-500" />
                       Auto-Scale
@@ -607,43 +523,6 @@ export default function Dashboard() {
                       <Maximize className="w-3 h-3"/> Fit
                     </button>
                   </div>
-                </div>
-                
-                <div className="flex flex-wrap items-center gap-3 text-xs bg-gray-50 p-2 rounded-lg border border-gray-100">
-                  <label className="flex items-center gap-2 cursor-pointer group">
-                    <input type="checkbox" checked={visibleSeries.vwap} onChange={e => setVisibleSeries(s => ({...s, vwap: e.target.checked}))} className="hidden" />
-                    <div className={`w-3 h-1 rounded-sm border-t border-dashed transition-colors ${visibleSeries.vwap ? 'bg-pink-400 border-pink-400' : 'bg-gray-300 border-gray-300'}`}></div>
-                    <span className={`transition-colors ${visibleSeries.vwap ? "text-gray-700 font-medium" : "text-gray-400 group-hover:text-gray-500"}`}>VWAP</span>
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer group">
-                    <input type="checkbox" checked={visibleSeries.macroSma} onChange={e => setVisibleSeries(s => ({...s, macroSma: e.target.checked}))} className="hidden" />
-                    <div className={`w-3 h-1 rounded-sm transition-colors ${visibleSeries.macroSma ? 'bg-purple-600/70' : 'bg-gray-300'}`}></div>
-                    <span className={`transition-colors ${visibleSeries.macroSma ? "text-gray-700 font-medium" : "text-gray-400 group-hover:text-gray-500"}`}>Macro SMA</span>
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer group">
-                    <input type="checkbox" checked={visibleSeries.bb} onChange={e => setVisibleSeries(s => ({...s, bb: e.target.checked}))} className="hidden" />
-                    <div className={`w-3 h-1 rounded-sm border-t border-dotted transition-colors ${visibleSeries.bb ? 'border-blue-500' : 'border-gray-300'}`}></div>
-                    <span className={`transition-colors ${visibleSeries.bb ? "text-gray-700 font-medium" : "text-gray-400 group-hover:text-gray-500"}`}>Bands</span>
-                  </label>
-                  <div className="w-px h-4 bg-gray-300 mx-1"></div>
-                  <label className="flex items-center gap-2 cursor-pointer group">
-                    <input type="checkbox" checked={visibleSeries.ofi} onChange={e => setVisibleSeries(s => ({...s, ofi: e.target.checked}))} className="hidden" />
-                    <div className={`flex rounded-sm overflow-hidden h-3 transition-opacity ${visibleSeries.ofi ? 'opacity-100' : 'opacity-40 grayscale'}`}>
-                      <div className="w-1.5 h-3 bg-emerald-600"></div>
-                      <div className="w-1.5 h-3 bg-red-600"></div>
-                    </div>
-                    <span className={`transition-colors ${visibleSeries.ofi ? "text-gray-700 font-medium" : "text-gray-400 group-hover:text-gray-500"}`}>Norm OFI</span>
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer group">
-                    <input type="checkbox" checked={visibleSeries.ema} onChange={e => setVisibleSeries(s => ({...s, ema: e.target.checked}))} className="hidden" />
-                    <div className={`w-3 h-1 rounded-sm transition-colors ${visibleSeries.ema ? 'bg-amber-500' : 'bg-gray-300'}`}></div>
-                    <span className={`transition-colors ${visibleSeries.ema ? "text-gray-700 font-medium" : "text-gray-400 group-hover:text-gray-500"}`}>OFI EMA</span>
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer group">
-                    <input type="checkbox" checked={visibleSeries.obi} onChange={e => setVisibleSeries(s => ({...s, obi: e.target.checked}))} className="hidden" />
-                    <div className={`w-3 h-1 rounded-sm transition-colors ${visibleSeries.obi ? 'bg-pink-500' : 'bg-gray-300'}`}></div>
-                    <span className={`transition-colors ${visibleSeries.obi ? "text-gray-700 font-medium" : "text-gray-400 group-hover:text-gray-500"}`}>OBI Z-Score</span>
-                  </label>
                 </div>
               </div>
               <div className="w-full h-[calc(100%-4.5rem)]">
@@ -663,12 +542,9 @@ export default function Dashboard() {
                   <RealtimeChart 
                     ref={chartRef}
                     data={uiDelta} 
-                    trades={metrics.recent_trades_full} 
-                    timeframeMs={timeframe}
-                    chartType={chartType}
+                    trades={currentState?.recent_trades} 
                     autoScale={autoScale}
                     followLive={followLive}
-                    visibleSeries={visibleSeries}
                   />
                 </ErrorBoundary>
               </div>
@@ -691,7 +567,7 @@ export default function Dashboard() {
               <div className="bg-white border border-gray-200 shadow-sm p-5 rounded-xl h-[1040px] lg:col-span-2">
                 <h2 className="text-sm font-medium text-gray-500 mb-4">Orders Activity (Fills + Cancels + Pending)</h2>
                 <div className="w-full h-[calc(100%-2rem)]">
-                  <TradesList trades={metrics.recent_trades_full} cancellations={metrics.recent_cancellations ?? []} pendingOrders={metrics.pending_orders ?? []} />
+                  <TradesList trades={currentState?.recent_trades ?? []} cancellations={[]} pendingOrders={currentState?.pending_orders ?? []} />
                 </div>
               </div>
             </div>
@@ -704,78 +580,7 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* Strategy Explanation Section */}
-        <div className="bg-white border border-gray-200 shadow-sm p-6 rounded-xl mt-8">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-xl font-semibold text-gray-900">Trading Strategy Overview</h2>
-            <button
-              onClick={handleShowCode}
-              title="View Python Engine Code"
-              className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-lg transition-colors"
-            >
-              <Code className="w-4 h-4" />
-              View Engine Code
-            </button>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 text-sm text-gray-600">
-            <div className="space-y-4">
-              <div>
-                <h3 className="text-emerald-400 font-medium mb-1">1. Micro-Price (The Foundation)</h3>
-                <p>Instead of using a naive Mid-Price, the engine uses Micro-Price, which weights the price toward the side with the most volume. This allows indicators to react to liquidity shifts before the actual spread crosses.</p>
-              </div>
-              <div>
-                <h3 className="text-blue-400 font-medium mb-1">2. Normalized OFI EMA & Macro Trend (Momentum)</h3>
-                <p>Triggers aggressive taker market orders when normalized Order Flow Imbalance (OFI) EMA exceeds thresholds, aligned with the macro trend (Micro-Price vs Macro SMA). Normalizes OFI using Z-scores to adapt to changing volatility.</p>
-              </div>
-              <div>
-                <h3 className="text-pink-400 font-medium mb-1">3. VWAP & Normalized OBI (Mean Reversion)</h3>
-                <p>Buys on deep mean reversion (negative OBI Z-score indicating heavy sell pressure + VWAP discount) combined with OFI absorption. Similarly, shorts on positive OBI Z-scores showing heavy buy pressure and a VWAP premium when OFI shows exhaustion.</p>
-              </div>
-            </div>
-            <div className="space-y-4">
-              <div>
-                <h3 className="text-amber-400 font-medium mb-1">4. Bollinger Bands (Volatility & Bounds)</h3>
-                <p>Computes organic volatility using Bollinger Bands around the Micro-Price. These upper, lower, and mid bands act as dynamic thresholds alongside trailing VWAP/SMA boundaries to visualize abnormal price excursions and compressions.</p>
-              </div>
-              <div>
-                <h3 className="text-purple-400 font-medium mb-1">5. Trend Continuation & Cooldowns</h3>
-                <p>Buys minor dips (VWAP discount) in a strong macro uptrend (positive Macro SMA slope) when OFI flips positive. Sells minor rips in strong downtrends. Each execution locks the strategy for 1s to 5s based on strategy style to prevent signal over-firing.</p>
-              </div>
-              <div>
-                <h3 className="text-red-400 font-medium mb-1">6. Risk Management & Sizing</h3>
-                <p>Auto-trade dynamically adjusts static position sizes (50 to 250 bps) based on the Strategy Style selected above, overriding manual size. It enforces strict risk parameters, automatically closing positions with taker requests if Micro-Price moves 5% against entry.</p>
-              </div>
-            </div>
-          </div>
-        </div>
-
       </div>
-
-      {/* Engine Code Modal */}
-      {showCodeModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="bg-white rounded-xl shadow-lg w-full max-w-4xl max-h-[90vh] flex flex-col">
-            <div className="flex items-center justify-between p-4 border-b border-gray-200">
-              <h2 className="text-lg font-semibold flex items-center gap-2">
-                <Code className="w-5 h-5" />
-                engine.py
-              </h2>
-              <button 
-                onClick={() => setShowCodeModal(false)}
-                className="p-1 hover:bg-gray-100 rounded-lg transition-colors"
-                title="Close"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <div className="p-4 overflow-auto bg-[#1e1e1e] flex-1">
-              <pre className="text-sm font-mono text-gray-300 whitespace-pre-wrap">
-                {engineCode}
-              </pre>
-            </div>
-          </div>
-        </div>
-      )}
     </main>
   );
 }

@@ -4,6 +4,7 @@ export interface NormalizedDepth {
 }
 
 export interface NormalizedTick {
+  symbol?: string;
   timestamp: number;
   bid: number;
   ask: number;
