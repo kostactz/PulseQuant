@@ -26,8 +26,6 @@ export class BinanceAdapter implements MarketDataAdapter {
       this.buffer.set(sym, []);
       this.isSnapshotLoaded.set(sym, false);
       this.accumulatedTradeVol.set(sym, 0);
-      this.prevBids.set(sym, []);
-      this.prevAsks.set(sym, []);
     });
   }
   
@@ -49,10 +47,6 @@ export class BinanceAdapter implements MarketDataAdapter {
   
   // Real-time top of book
   private latestBookTicker: Map<string, { bid: number, ask: number, bidQty: number, askQty: number, ts: number }> = new Map();
-  
-  // Previous top of book for OFI
-  private prevBids: Map<string, [number, number][]> = new Map();
-  private prevAsks: Map<string, [number, number][]> = new Map();
 
   // Listen Key State
   private listenKey: string | null = null;
@@ -410,10 +404,6 @@ export class BinanceAdapter implements MarketDataAdapter {
     const groupedBids = groupLevels(sortedBids, false, GROUP_SIZE, LIMIT);
     const groupedAsks = groupLevels(sortedAsks, true, GROUP_SIZE, LIMIT);
 
-    const OFI_LEVELS = 5;
-    let deltaBid = 0;
-    let deltaAsk = 0;
-    
     const exportedBids = sortedBids.slice(0, 20).map(x => [...x] as [number, number]);
     const exportedAsks = sortedAsks.slice(0, 20).map(x => [...x] as [number, number]);
 
@@ -426,34 +416,6 @@ export class BinanceAdapter implements MarketDataAdapter {
       }
     }
 
-    const prevBids = this.prevBids.get(symbol) || [];
-    const prevAsks = this.prevAsks.get(symbol) || [];
-
-    if (prevBids.length > 0 && prevAsks.length > 0) {
-      for (let i = 0; i < Math.min(OFI_LEVELS, exportedBids.length, prevBids.length); i++) {
-        const weight = 1.0 - (i * 0.2); 
-        const [currPrice, currQty] = exportedBids[i];
-        const [prevPrice, prevQty] = prevBids[i];
-
-        if (currPrice > prevPrice) deltaBid += currQty * weight;
-        else if (currPrice === prevPrice) deltaBid += (currQty - prevQty) * weight;
-        else deltaBid -= prevQty * weight;
-      }
-
-      for (let i = 0; i < Math.min(OFI_LEVELS, exportedAsks.length, prevAsks.length); i++) {
-        const weight = 1.0 - (i * 0.2);
-        const [currPrice, currQty] = exportedAsks[i];
-        const [prevPrice, prevQty] = prevAsks[i];
-
-        if (currPrice < prevPrice) deltaAsk += currQty * weight;
-        else if (currPrice === prevPrice) deltaAsk += (currQty - prevQty) * weight;
-        else deltaAsk -= prevQty * weight;
-      }
-    }
-
-    this.prevBids.set(symbol, exportedBids.slice(0, OFI_LEVELS));
-    this.prevAsks.set(symbol, exportedAsks.slice(0, OFI_LEVELS));
-
     const accumulatedTradeVol = this.accumulatedTradeVol.get(symbol) || 0;
 
     const tick: NormalizedTick = {
@@ -463,8 +425,8 @@ export class BinanceAdapter implements MarketDataAdapter {
       ask: topAskPrice,
       bid_vol: topBidQty,
       ask_vol: topAskQty,
-      delta_bid: deltaBid,
-      delta_ask: deltaAsk,
+      delta_bid: 0,
+      delta_ask: 0,
       trade_volume: accumulatedTradeVol,
       depth: { bids: groupedBids, asks: groupedAsks },
       bids: exportedBids,
@@ -654,8 +616,6 @@ export class BinanceAdapter implements MarketDataAdapter {
       this.buffer.delete(sym);
       this.latestBookTicker.delete(sym);
       this.accumulatedTradeVol.delete(sym);
-      this.prevBids.delete(sym);
-      this.prevAsks.delete(sym);
       this.lastUpdateId.delete(sym);
       this.isSnapshotLoaded.delete(sym);
     });
@@ -668,8 +628,6 @@ export class BinanceAdapter implements MarketDataAdapter {
       this.buffer.set(sym, []);
       this.isSnapshotLoaded.set(sym, false);
       this.accumulatedTradeVol.set(sym, 0);
-      this.prevBids.set(sym, []);
-      this.prevAsks.set(sym, []);
     });
 
     this.isIntentionalDisconnect = false;

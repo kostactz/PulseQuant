@@ -20,17 +20,13 @@ interface Cancellation {
   qty: number;
   reason: string;
   trigger_detail?: {
-    ofi_gate?: boolean;
-    obi_gate?: boolean;
-    ofi_cancel_level?: number;
-    obi_cancel_level?: number;
+    zscore_gate?: boolean;
+    zscore_cancel_level?: number;
   };
   toxicity?: {
-    ofi_ema?: number;
-    ofi_deriv?: number;
-    obi?: number;
-    buy_ofi_cancel_level?: number;
-    sell_ofi_cancel_level?: number;
+    zscore?: number;
+    spread?: number;
+    beta?: number;
   };
 }
 
@@ -160,8 +156,8 @@ export const TradesList: React.FC<TradesListProps> = ({ trades, cancellations = 
                       </div>
                       <div>
                         <div className="font-medium text-sm">Indicator Snapshot</div>
-                        <div className="text-[13px] text-gray-600 mt-1">OFI EMA: {trade.indicators?.ofi_ema?.toFixed(3) ?? '-'}</div>
-                        <div className="text-[13px] text-gray-600">OBI: {trade.indicators?.obi?.toFixed(3) ?? trade.indicators?.obi_norm?.toFixed(3) ?? '-'}</div>
+                        <div className="text-[13px] text-gray-600 mt-1">Z-Score: {trade.indicators?.zscore?.toFixed(3) ?? '-'}</div>
+                        <div className="text-[13px] text-gray-600">Spread: {trade.indicators?.spread?.toFixed(3) ?? '-'}</div>
                       </div>
                     </div>
 
@@ -203,8 +199,8 @@ export const TradesList: React.FC<TradesListProps> = ({ trades, cancellations = 
                       </div>
                       <div>
                         <div className="font-medium text-sm">Indicator Snapshot</div>
-                        <div className="text-[13px] text-gray-600 mt-1">OFI EMA: {order.ind?.ofi_ema?.toFixed(3) ?? '-'}</div>
-                        <div className="text-[13px] text-gray-600">OBI: {order.ind?.obi?.toFixed(3) ?? order.ind?.obi_norm?.toFixed(3) ?? '-'}</div>
+                        <div className="text-[13px] text-gray-600 mt-1">Z-Score: {order.ind?.zscore?.toFixed(3) ?? '-'}</div>
+                        <div className="text-[13px] text-gray-600">Spread: {order.ind?.spread?.toFixed(3) ?? '-'}</div>
                       </div>
                     </div>
 
@@ -220,10 +216,10 @@ export const TradesList: React.FC<TradesListProps> = ({ trades, cancellations = 
 
           const cancel = event.cancel;
           const isBuy = cancel.side === 'buy';
-          const ofiEma = cancel.toxicity?.ofi_ema ?? 0;
-          const obi = cancel.toxicity?.obi ?? 0;
+          const zscore = cancel.toxicity?.zscore ?? 0;
+          const spread = cancel.toxicity?.spread ?? 0;
           const restingSec = (cancel.resting_ms ?? 0) / 1000;
-          const gates = [cancel.trigger_detail?.ofi_gate ? 'OFI' : null, cancel.trigger_detail?.obi_gate ? 'OBI' : null].filter(Boolean).join('+');
+          const gates = [cancel.trigger_detail?.zscore_gate ? 'Z-SCORE' : null].filter(Boolean).join('+');
 
           return (
             <div key={key}>
@@ -236,7 +232,7 @@ export const TradesList: React.FC<TradesListProps> = ({ trades, cancellations = 
                 </div>
                 <div className="text-right font-mono text-gray-700">${cancel.price.toFixed(2)}</div>
                 <div className="text-right font-mono text-xs text-gray-600 leading-tight">{Number.isInteger(cancel.qty) ? cancel.qty : cancel.qty.toFixed(4)}</div>
-                <div className="text-right text-xs text-gray-700">{gates || 'TOX'} {restingSec.toFixed(1)}s | ofi {ofiEma.toFixed(2)} obi {obi.toFixed(2)}</div>
+                <div className="text-right text-xs text-gray-700">{gates || 'TOX'} {restingSec.toFixed(1)}s | z-score {zscore.toFixed(2)} spread {spread.toFixed(2)}</div>
               </div>
 
               {openRows[key] && (
@@ -246,12 +242,12 @@ export const TradesList: React.FC<TradesListProps> = ({ trades, cancellations = 
                       <div className="font-medium text-sm">Cancel Detail</div>
                       <div className="text-[13px] text-gray-600 mt-1">Submitted: {formatTime(cancel.submitted_at ?? cancel.timestamp)} ({((cancel.resting_ms ?? 0) / 1000).toFixed(2)}s)</div>
                       <div className="text-[13px] text-gray-600">Reason: {cancel.reason}</div>
-                      <div className="text-[13px] text-gray-600">Triggers: {gates || 'OFI/OBI'}</div>
+                      <div className="text-[13px] text-gray-600">Triggers: {gates || 'Z-SCORE'}</div>
                     </div>
                     <div>
                       <div className="font-medium text-sm">Indicator Snapshot</div>
-                      <div className="text-[13px] text-gray-600 mt-1">OFI EMA: {ofiEma.toFixed(3)}</div>
-                      <div className="text-[13px] text-gray-600">OBI: {obi.toFixed(3)}</div>
+                      <div className="text-[13px] text-gray-600 mt-1">Z-Score: {zscore.toFixed(3)}</div>
+                      <div className="text-[13px] text-gray-600">Spread: {spread.toFixed(3)}</div>
                     </div>
                   </div>
 
