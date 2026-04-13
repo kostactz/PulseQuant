@@ -148,6 +148,89 @@ async function initPyodide() {
   initInProgress = false;
 }
 
+
+let tickBuffer: any[] = [];
+let batchTimeout: any = null;
+const BATCH_INTERVAL_MS = 50;
+
+function flushBatch() {
+  batchTimeout = null;
+  if (tickBuffer.length === 0 || !pandasLoaded || !pyodide) return;
+  
+  const batch = tickBuffer;
+  tickBuffer = [];
+  
+  const now = Date.now();
+  const enqueuedAt = batch[0].enqueuedAt || now;
+  const queueTime = now - enqueuedAt;
+
+  if (queueTime > 150 && now - lastQueueWarnTime > 5000) {
+    postMessage({ type: 'LOGS', data: [{ level: 'WARN', message: `Worker queue delay: ${queueTime}ms`, data: null }] });
+    lastQueueWarnTime = now;
+  }
+
+  let processEvents: any = null;
+  let pyPayload: any = null;
+  let results: any = null;
+  try {
+    processEvents = pyodide.globals.get('process_events');
+    const payloadsOnly = batch.map(b => b.payload);
+    pyPayload = pyodide.toPy(payloadsOnly);
+    results = processEvents(pyPayload);
+    
+    let jsResults: any = results;
+    if (results && typeof results.toJs === 'function') jsResults = results.toJs({ dict_converter: Object.fromEntries });
+
+    const finishTime = Date.now();
+    const sysLat = finishTime - enqueuedAt;
+    let netLat = 0;
+    if (payloadsOnly.length > 0) {
+      const firstPayload = payloadsOnly[0];
+      const tickTs = firstPayload.data?.timestamp || firstPayload.timestamp;
+      if (tickTs) {
+        netLat = enqueuedAt - tickTs;
+        if (netLat < 0) netLat = 0;
+      }
+    }
+
+    statsBuffer.push({ ts: finishTime, netLat, sysLat });
+    const cutoff = finishTime - STATS_WINDOW_MS;
+    statsBuffer = statsBuffer.filter(s => s.ts >= cutoff);
+    
+    const count = statsBuffer.length;
+    const mps = count / (STATS_WINDOW_MS / 1000);
+    const avgNetLat = count > 0 ? statsBuffer.reduce((acc, s) => acc + s.netLat, 0) / count : 0;
+    const avgSysLat = count > 0 ? statsBuffer.reduce((acc, s) => acc + s.sysLat, 0) / count : 0;
+
+    const currentStats = {
+      mps: mps.toFixed(1),
+      netLat: avgNetLat.toFixed(1),
+      sysLat: avgSysLat.toFixed(1)
+    };
+    
+    (self as any).latestStats = currentStats;
+
+    if (jsResults.logs && jsResults.logs.length > 0) {
+      postMessage({ type: 'LOGS', data: jsResults.logs });
+    }
+
+    if (jsResults.intents && jsResults.intents.length > 0) {
+      postMessage({ type: 'INTENTS', data: jsResults.intents });
+    }
+  } catch (err) {
+    console.error('[Worker] Process error:', err);
+    postMessage({ type: 'ERROR', error: String(err) });
+    if (String(err).includes('Pyodide already fatally failed')) {
+      pandasLoaded = false;
+      initPyodide();
+    }
+  } finally {
+    if (results && typeof results.destroy === 'function') results.destroy();
+    if (pyPayload && typeof pyPayload.destroy === 'function') pyPayload.destroy();
+    if (processEvents && typeof processEvents.destroy === 'function') processEvents.destroy();
+  }
+}
+
 self.onmessage = async (e: MessageEvent) => {
   try {
     if (e.data.type === 'INIT') {
@@ -162,78 +245,17 @@ self.onmessage = async (e: MessageEvent) => {
 
     if (e.data.type === 'PROCESS') {
       const now = Date.now();
+      const payloadArr = e.data.payload;
       const enqueuedAt = e.data.enqueuedAt || now;
-      const queueTime = now - enqueuedAt;
-
-      if (queueTime > 50 && now - lastQueueWarnTime > 5000) {
-        postMessage({ type: 'LOGS', data: [{ level: 'WARN', message: `Worker queue delay: ${queueTime}ms`, data: null }] });
-        lastQueueWarnTime = now;
+      
+      for (const item of payloadArr) {
+        tickBuffer.push({ payload: item, enqueuedAt });
       }
 
-      let processEvents: any = null;
-      let pyPayload: any = null;
-      let results: any = null;
-      try {
-        processEvents = pyodide.globals.get('process_events');
-        pyPayload = pyodide.toPy(e.data.payload);
-        results = processEvents(pyPayload);
-        
-        let jsResults: any = results;
-        if (results && typeof results.toJs === 'function') jsResults = results.toJs({ dict_converter: Object.fromEntries });
-
-        const finishTime = Date.now();
-        const sysLat = finishTime - enqueuedAt;
-        let netLat = 0;
-        if (e.data.payload && e.data.payload.length > 0) {
-          const firstPayload = e.data.payload[0];
-          const tickTs = firstPayload.data?.timestamp || firstPayload.timestamp;
-          if (tickTs) {
-            netLat = enqueuedAt - tickTs;
-            if (netLat < 0) netLat = 0;
-          }
-        }
-
-        statsBuffer.push({ ts: finishTime, netLat, sysLat });
-        const cutoff = finishTime - STATS_WINDOW_MS;
-        statsBuffer = statsBuffer.filter(s => s.ts >= cutoff);
-        
-        const count = statsBuffer.length;
-        const mps = count / (STATS_WINDOW_MS / 1000);
-        const avgNetLat = count > 0 ? statsBuffer.reduce((acc, s) => acc + s.netLat, 0) / count : 0;
-        const avgSysLat = count > 0 ? statsBuffer.reduce((acc, s) => acc + s.sysLat, 0) / count : 0;
-
-        // Since processEvents now only returns logs and intents, we don't attach stats here.
-        // We'll attach system_stats to the latestMetrics when we fetch them in GET_UI_DELTA.
-        const currentStats = {
-          mps: mps.toFixed(1),
-          netLat: avgNetLat.toFixed(1),
-          sysLat: avgSysLat.toFixed(1)
-        };
-        
-        // Temporarily store the latest stats to be retrieved by GET_UI_DELTA
-        (self as any).latestStats = currentStats;
-
-        if (jsResults.logs && jsResults.logs.length > 0) {
-          postMessage({ type: 'LOGS', data: jsResults.logs });
-        }
-
-        if (jsResults.intents && jsResults.intents.length > 0) {
-          postMessage({ type: 'INTENTS', data: jsResults.intents });
-        }
-      } catch (err) {
-        console.error('[Worker] Process error:', err);
-        postMessage({ type: 'ERROR', error: String(err) });
-        if (String(err).includes('Pyodide already fatally failed')) {
-          pandasLoaded = false;
-          // attempt background re-init
-          initPyodide();
-        }
-      } finally {
-        if (results && typeof results.destroy === 'function') results.destroy();
-        if (pyPayload && typeof pyPayload.destroy === 'function') pyPayload.destroy();
-        if (processEvents && typeof processEvents.destroy === 'function') processEvents.destroy();
+      if (!batchTimeout) {
+        batchTimeout = setTimeout(flushBatch, BATCH_INTERVAL_MS);
       }
-        } else if (e.data.type === 'GET_UI_DELTA') {
+    } else if (e.data.type === 'GET_UI_DELTA') {
       let results: any = null;
       try {
         results = pyodide.runPython(`get_ui_delta()`);

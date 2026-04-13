@@ -646,8 +646,6 @@ export class BinanceAdapter implements MarketDataAdapter {
       this.buffer.set(sym, []);
       this.isSnapshotLoaded.set(sym, false);
       this.accumulatedTradeVol.set(sym, 0);
-      this.prevBids.set(sym, []);
-      this.prevAsks.set(sym, []);
       
       // We would need to reconnect or send a sub message, but since Binance WS uses query string streams upon connect,
       // it's easier to drop and reconnect public.
