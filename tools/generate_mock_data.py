@@ -1,9 +1,15 @@
 import json
 import random
 import time
+import argparse
 
 def generate():
-    out = "test/resources/captures/mock_dual_asset.jsonl"
+    parser = argparse.ArgumentParser(description='Generate mock dual-asset data')
+    parser.add_argument('--target', type=str, default='BTCUSDT', help='Target asset symbol')
+    parser.add_argument('--feature', type=str, default='ETHUSDT', help='Feature asset symbol')
+    args = parser.parse_args()
+
+    out = f"test/resources/captures/mock_dual_asset_{args.target}_{args.feature}.jsonl"
     print(f"Generating mock data to {out}")
     
     start_ts = int(time.time() * 1000)
@@ -26,17 +32,17 @@ def generate():
                 btc_price += move
                 eth_price += move * 0.06 + random.normalvariate(0, 1.0)
                 
-            # Emit BTC
+            # Emit Target
             f.write(json.dumps({
-                "symbol": "BTCUSDT",
+                "symbol": args.target,
                 "timestamp": ts,
                 "bid": btc_price - 0.5,
                 "ask": btc_price + 0.5
             }) + "\n")
             
-            # Emit ETH
+            # Emit Feature
             f.write(json.dumps({
-                "symbol": "ETHUSDT",
+                "symbol": args.feature,
                 "timestamp": ts + 10, # Slightly offset
                 "bid": eth_price - 0.5,
                 "ask": eth_price + 0.5

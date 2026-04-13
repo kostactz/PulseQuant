@@ -29,6 +29,8 @@ def test_signal_generator_basic():
 
 def test_signal_generator_timers():
     bus = EventBus()
+    from public.python.engine import BackgroundAnalyticsWorker
+    bg = BackgroundAnalyticsWorker(bus)
     sg = SignalGenerator(bus, target="BTC", feature="ETH")
     
     regimes = []
@@ -51,6 +53,9 @@ def test_signal_generator_timers():
         })
         
     sg._on_timer_1m({'timestamp': 100000})
+    
+    import time
+    time.sleep(0.5) # Wait for thread pool to finish
     
     assert len(regimes) > 0
     assert regimes[-1]['toxic'] is True

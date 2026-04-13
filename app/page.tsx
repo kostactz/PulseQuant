@@ -1,5 +1,6 @@
 'use client';
 import React, { useEffect, useState, useRef } from 'react';
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ReferenceLine, ResponsiveContainer } from 'recharts';
 import { usePythonWorker } from '@/hooks/usePythonWorker';
 import { useMarketData } from '@/hooks/useMarketData';
 import { SecuritySetupModal } from '@/components/SecuritySetupModal';
@@ -42,7 +43,7 @@ export default function Dashboard() {
       executeModeSwitch(newMode);
     }
   };
-  const { isReady, metrics, uiDelta, getUIDelta, processBatch, clearData, clearCache, executeTrade, setAutoTrade, updateStrategy, setTradeSize, configureStrategy } = usePythonWorker((intent) => {
+  const { isReady, metrics, uiDelta, getUIDelta, processBatch, clearData, clearCache, executeTrade, setAutoTrade, updateStrategy, setTradeSize, configureStrategy, runAdhocAnalysis, adhocResult } = usePythonWorker((intent) => {
     if (handleIntentRef.current) handleIntentRef.current(intent);
   });
   const { latestDepth, latestTick, getAndClearBuffer, clearBuffer, isPlaying, setIsPlaying, isRecording, toggleRecording, executeIntent, setSymbols } = useMarketData(
@@ -96,8 +97,38 @@ export default function Dashboard() {
 
   const [targetAsset, setTargetAsset] = useState('BTCUSDT');
   const [featureAsset, setFeatureAsset] = useState('ETHUSDT');
+  const [isFetchingHistory, setIsFetchingHistory] = useState(false);
 
   const AVAILABLE_ASSETS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'ADAUSDT', 'XRPUSDT', 'BNBUSDT'];
+
+  const handleRunAnalysis = async () => {
+    setIsFetchingHistory(true);
+    try {
+      const fetchHistory = async (symbol: string) => {
+        const allKlines: any[] = [];
+        const endTime = Date.now();
+        const startTime = endTime - (30 * 24 * 60 * 60 * 1000); // 30 days
+        let currentStart = startTime;
+        while (currentStart < endTime) {
+          const res = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=1m&startTime=${currentStart}&endTime=${endTime}&limit=1500`);
+          const data = await res.json();
+          if (!data || data.length === 0) break;
+          data.forEach((k: any) => allKlines.push([k[0], parseFloat(k[4])]));
+          currentStart = data[data.length - 1][0] + 1;
+        }
+        return allKlines;
+      };
+
+      const targetData = await fetchHistory(targetAsset);
+      const featureData = await fetchHistory(featureAsset);
+      
+      await runAdhocAnalysis(targetData, featureData, 800);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setIsFetchingHistory(false);
+    }
+  };
 
   const handlePairChange = async (newTarget: string, newFeature: string) => {
     if (newTarget === newFeature) return;
@@ -429,6 +460,24 @@ export default function Dashboard() {
                     </div>
                   </div>
                   <div>
+                    <div className="text-xs text-gray-400 uppercase tracking-wider font-semibold mb-1">Hurst Exponent</div>
+                    <div className="font-mono text-gray-700">
+                      {currentState.spread_metrics?.hurst?.toFixed(4) || 'N/A'}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-gray-400 uppercase tracking-wider font-semibold mb-1">Half-life (ticks)</div>
+                    <div className="font-mono text-gray-700">
+                      {currentState.spread_metrics?.half_life?.toFixed(1) || 'N/A'}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-gray-400 uppercase tracking-wider font-semibold mb-1">ADF p-value</div>
+                    <div className="font-mono text-gray-700">
+                      {currentState.spread_metrics?.adf_pvalue?.toFixed(4) || 'N/A'}
+                    </div>
+                  </div>
+                  <div>
                     <div className="text-xs text-gray-400 uppercase tracking-wider font-semibold mb-1">Toxicity Flag</div>
                     <div className={`font-mono ${currentState.toxicity_flag ? 'text-red-600 font-bold' : 'text-emerald-600'}`}>
                       {currentState.toxicity_flag ? 'TOXIC' : 'SAFE'}
@@ -614,6 +663,80 @@ export default function Dashboard() {
                 </div>
               </div>
             </div>
+
+            {/* Ad-Hoc Analysis Section */}
+            <div className="bg-white border border-gray-200 shadow-sm p-5 rounded-xl mt-6">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
+                <div>
+                  <h2 className="text-lg font-bold text-gray-900">Historical Ad-Hoc Analysis</h2>
+                  <p className="text-sm text-gray-500">Run a 1-month retrospective analysis on the current pair to identify Z-score distribution and optimal sigma thresholds.</p>
+                </div>
+                <button
+                  onClick={handleRunAnalysis}
+                  disabled={isFetchingHistory || !isReady}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                    isFetchingHistory
+                      ? 'bg-blue-100 text-blue-700' 
+                      : 'bg-blue-600 text-white hover:bg-blue-700 shadow-sm shadow-blue-500/30'
+                  }`}
+                >
+                  {isFetchingHistory ? (
+                    <><div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" /> Fetching Data...</>
+                  ) : (
+                    <><Activity className="w-4 h-4" /> Run 1-Month Analysis</>
+                  )}
+                </button>
+              </div>
+
+              {adhocResult && !adhocResult.error && (
+                <div className="space-y-6">
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                      <p className="text-xs text-gray-500 uppercase font-semibold">Total Data Points</p>
+                      <p className="text-lg font-mono font-bold text-gray-900">{adhocResult.total_points?.toLocaleString()}</p>
+                    </div>
+                    <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                      <p className="text-xs text-gray-500 uppercase font-semibold">Z-Score Mean</p>
+                      <p className="text-lg font-mono font-bold text-gray-900">{adhocResult.mean?.toFixed(4)}</p>
+                    </div>
+                    <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                      <p className="text-xs text-gray-500 uppercase font-semibold">Z-Score Std Dev</p>
+                      <p className="text-lg font-mono font-bold text-gray-900">{adhocResult.std?.toFixed(4)}</p>
+                    </div>
+                    <div className="bg-emerald-50 p-4 rounded-lg border border-emerald-200">
+                      <p className="text-xs text-emerald-600 uppercase font-semibold">Recommended Sigma</p>
+                      <p className="text-lg font-mono font-bold text-emerald-700">±{adhocResult.recommended_sigma?.toFixed(2)}</p>
+                    </div>
+                  </div>
+
+                  <div className="h-[400px] w-full mt-6">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={adhocResult.bins} margin={{ top: 20, right: 30, left: 20, bottom: 20 }}>
+                        <XAxis 
+                          dataKey="bin" 
+                          tickFormatter={(val) => val.toFixed(2)} 
+                          label={{ value: 'Z-Score', position: 'insideBottom', offset: -10 }} 
+                        />
+                        <YAxis />
+                        <Tooltip formatter={(value: any) => [Number(value), 'Frequency']} labelFormatter={(label: any) => `Z-Score: ${Number(label).toFixed(2)}`} />
+                        <Bar dataKey="count" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                        <ReferenceLine x={adhocResult.recommended_sigma} stroke="#10b981" strokeDasharray="3 3" label={{ position: 'top', value: '+Rec Sigma', fill: '#10b981' }} />
+                        <ReferenceLine x={-adhocResult.recommended_sigma} stroke="#10b981" strokeDasharray="3 3" label={{ position: 'top', value: '-Rec Sigma', fill: '#10b981' }} />
+                        <ReferenceLine x={0} stroke="#ef4444" strokeWidth={1} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              )}
+              
+              {adhocResult?.error && (
+                <div className="bg-red-50 border border-red-200 p-4 rounded-lg text-red-700">
+                  <p className="font-bold">Analysis Failed</p>
+                  <p className="text-sm">{adhocResult.error}</p>
+                </div>
+              )}
+            </div>
+
           </div>
         ) : (
           <div className="h-[400px] flex flex-col items-center justify-center border border-gray-200 border-dashed rounded-xl bg-white/50 shadow-sm">

@@ -1,7 +1,7 @@
 import math
-import numpy as np
 import logging
 from typing import Dict, List, Any, Callable
+import concurrent.futures
 
 # ==========================================
 # 1. EVENT BUS & PUB-SUB CORE
@@ -10,6 +10,7 @@ class EventBus:
     """Synchronous internal Pub-Sub dispatcher for high-frequency trading engine."""
     def __init__(self):
         self.subscribers: Dict[str, List[Callable]] = {}
+        self.thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=2)
 
     def subscribe(self, topic: str, callback: Callable):
         if topic not in self.subscribers:
@@ -20,6 +21,13 @@ class EventBus:
         if topic in self.subscribers:
             for callback in self.subscribers[topic]:
                 callback(payload)
+
+    def publish_async(self, topic: str, payload: Any):
+        """Offload heavy tasks to a background thread so the hot path isn't blocked."""
+        if topic in self.subscribers:
+            for callback in self.subscribers[topic]:
+                self.thread_pool.submit(callback, payload)
+
 
 # ==========================================
 # 2. MATH UTILITIES & EWMA BIVARIATE BUFFER
@@ -252,6 +260,7 @@ class SignalGenerator:
         
         self.bus.subscribe('MODEL_UPDATED', self._on_model_updated)
         self.bus.subscribe('TIMER_1M', self._on_timer_1m)
+        self.bus.subscribe('REGIME_CHANGE', self._on_regime_change)
         
     def _on_model_updated(self, payload: dict):
         if not payload['is_ready']:
@@ -286,13 +295,44 @@ class SignalGenerator:
         if len(self.history_target) < 50:
             return
             
+        # Dispatch asynchronously to avoid blocking the high-frequency execution
+        self.bus.publish_async('ANALYTICS_REQUEST', {
+            'target_history': list(self.history_target),
+            'feature_history': list(self.history_feature),
+            'timestamp': payload.get('timestamp')
+        })
+
+    def _on_regime_change(self, payload: dict):
+        self.is_toxic = payload.get('toxic', False)
+        # We can also handle other parameter updates here in the future
+
+
+# ==========================================
+# 4A. BACKGROUND ANALYTICS WORKER
+# ==========================================
+class BackgroundAnalyticsWorker:
+    """
+    Subscribes to ANALYTICS_REQUEST and runs expensive math outside the event loop.
+    Publishes REGIME_CHANGE back to the event bus.
+    """
+    def __init__(self, bus: EventBus, max_half_life=7200):
+        self.bus = bus
+        self.max_half_life = max_half_life
+        self.bus.subscribe('ANALYTICS_REQUEST', self._run_analytics)
+        
+    def _run_analytics(self, payload: dict):
         try:
             import numpy as np
             import statsmodels.api as sm
             from statsmodels.tsa.stattools import coint
             
-            target_arr = np.array(self.history_target)
-            feature_arr = np.array(self.history_feature)
+            target_history = payload.get('target_history', [])
+            feature_history = payload.get('feature_history', [])
+            if len(target_history) < 50:
+                return
+                
+            target_arr = np.array(target_history)
+            feature_arr = np.array(feature_history)
             
             # 1. ADF Cointegration test
             score, p_value, _ = coint(target_arr, feature_arr)
@@ -318,19 +358,18 @@ class SignalGenerator:
             is_coint = p_value < 0.05
             is_hl_valid = half_life_periods < self.max_half_life
             
-            was_toxic = self.is_toxic
-            self.is_toxic = not (is_coint and is_hl_valid)
+            is_toxic = not (is_coint and is_hl_valid)
             
-            if self.is_toxic and not was_toxic:
-                self.bus.publish('REGIME_CHANGE', {'toxic': True, 'p_value': p_value, 'half_life': half_life_periods})
-            elif not self.is_toxic and was_toxic:
-                self.bus.publish('REGIME_CHANGE', {'toxic': False, 'p_value': p_value, 'half_life': half_life_periods})
-                
+            # Publish back to the main event bus
+            self.bus.publish('REGIME_CHANGE', {
+                'toxic': is_toxic,
+                'p_value': p_value,
+                'half_life': half_life_periods
+            })
+            
         except Exception as e:
-            # Fallback to toxic if math fails
-            if not self.is_toxic:
-                self.is_toxic = True
-                self.bus.publish('REGIME_CHANGE', {'toxic': True, 'error': str(e)})
+            self.bus.publish('REGIME_CHANGE', {'toxic': True, 'error': str(e)})
+
 
 # ==========================================
 # 5. PORTFOLIO & EXECUTION MANAGERS
@@ -395,11 +434,48 @@ class ExecutionManager:
         self.feature_price = 0.0
         
         self.base_size = 0.1 # Trade size for the target asset
+        self.maker_timeout_ms = 5000  # Dynamic based on regime
+        self.maker_order_ts = 0
+        self.slippage_bps = 5.0       # Dynamic based on volatility
         
         self.bus.subscribe('SIGNAL_GENERATED', self._on_signal)
         self.bus.subscribe('ORDER_UPDATE', self._on_order_update)
         self.bus.subscribe('MODEL_UPDATED', self._on_model_update)
+        self.bus.subscribe('TIMER_1S', self._on_timer)
+        self.bus.subscribe('REGIME_CHANGE', self._on_regime_change)
         
+    def _on_regime_change(self, payload: dict):
+        if payload.get('toxic', False):
+            # Scale down size during toxic regimes
+            self.base_size = max(0.01, self.base_size * 0.5)
+        else:
+            # Restore/scale up slightly if safe, capped at 0.5
+            self.base_size = min(0.5, self.base_size * 1.1)
+            
+        hl = payload.get('half_life', 50.0)
+        # Faster mean reversion (lower half_life) -> tighter timeout
+        # e.g., if hl=10 ticks, timeout=2000ms. If hl=100, timeout=10000ms
+        self.maker_timeout_ms = max(1000, min(15000, int(hl * 200)))
+        
+        vol = payload.get('volatility', 0.001)
+        # Higher volatility -> higher slippage tolerance to ensure fills
+        self.slippage_bps = max(1.0, min(25.0, vol * 10000))
+        
+    def _on_timer(self, payload: dict):
+        ts = payload.get('timestamp', 0)
+        if self.state == 'LEGGING_MAKER_ENTRY' and self.active_maker_order_id:
+            if self.maker_order_ts > 0 and (ts - self.maker_order_ts) > self.maker_timeout_ms:
+                # Maker timeout exceeded, cancel the order
+                self.bus.publish('OUTBOUND_INTENT', {
+                    'action': 'CANCEL_ORDER',
+                    'order_id': self.active_maker_order_id,
+                    'symbol': self.target
+                })
+                self.state = 'IDLE'
+                self.active_maker_order_id = None
+                self.pending_leg2 = None
+                self.maker_order_ts = 0
+
     def _on_model_update(self, payload: dict):
         if payload.get('is_ready'):
             self.latest_beta = float(payload.get('beta', 1.0))
@@ -430,28 +506,35 @@ class ExecutionManager:
                 self.pending_leg2 = None
                 
             elif self.state == 'HEDGED':
-                # Market exit both legs immediately
+                # Aggressive Limit exit both legs immediately
                 self.state = 'IDLE'
                 
                 target_pos = self.portfolio.positions[self.target]
                 feature_pos = self.portfolio.positions[self.feature]
+                slip_ratio = self.slippage_bps / 10000.0
                 
                 if abs(target_pos) > 1e-8:
+                    side = 'SELL' if target_pos > 0 else 'BUY'
+                    price = self.target_price * (1.0 - slip_ratio) if side == 'SELL' else self.target_price * (1.0 + slip_ratio)
                     self.bus.publish('OUTBOUND_INTENT', {
                         'action': 'PLACE_ORDER',
                         'order_id': str(uuid.uuid4()),
                         'symbol': self.target,
-                        'side': 'SELL' if target_pos > 0 else 'BUY',
-                        'type': 'MARKET',
+                        'side': side,
+                        'type': 'LIMIT',
+                        'price': price,
                         'qty': abs(target_pos)
                     })
                 if abs(feature_pos) > 1e-8:
+                    side = 'SELL' if feature_pos > 0 else 'BUY'
+                    price = self.feature_price * (1.0 - slip_ratio) if side == 'SELL' else self.feature_price * (1.0 + slip_ratio)
                     self.bus.publish('OUTBOUND_INTENT', {
                         'action': 'PLACE_ORDER',
                         'order_id': str(uuid.uuid4()),
                         'symbol': self.feature,
-                        'side': 'SELL' if feature_pos > 0 else 'BUY',
-                        'type': 'MARKET',
+                        'side': side,
+                        'type': 'LIMIT',
+                        'price': price,
                         'qty': abs(feature_pos)
                     })
 
@@ -462,15 +545,28 @@ class ExecutionManager:
         self.state = 'LEGGING_MAKER_ENTRY'
         self.active_maker_order_id = str(uuid.uuid4())
         
+        # We need a timer timestamp. Let's use the last known engine tick timestamp
+        # or we just rely on the next TIMER_1S to set it if it's 0
+        self.maker_order_ts = 0 
+        
         # Calculate feature qty based on Beta and Notional ratio
         # Feature Notional = Target Notional * Beta
         feature_qty = self.base_size * (self.target_price / self.feature_price) * abs(self.latest_beta)
         
+        # Slippage Control: Instead of purely MARKET, create an aggressive LIMIT order
+        # for the Taker leg to avoid unbounded slippage in thin markets.
+        slip_ratio = self.slippage_bps / 10000.0
+        if feature_side == 'BUY':
+            taker_price = self.feature_price * (1.0 + slip_ratio)
+        else:
+            taker_price = self.feature_price * (1.0 - slip_ratio)
+            
         self.pending_leg2 = {
             'order_id': str(uuid.uuid4()),
             'symbol': self.feature,
             'side': feature_side,
-            'type': 'MARKET',
+            'type': 'LIMIT',
+            'price': taker_price,
             'qty': feature_qty
         }
         
@@ -484,30 +580,53 @@ class ExecutionManager:
             'price': self.target_price
         })
 
+    def _on_timer(self, payload: dict):
+        ts = payload.get('timestamp', 0)
+        
+        # Initialize maker_order_ts on the first timer tick after order is placed
+        if self.state == 'LEGGING_MAKER_ENTRY' and self.active_maker_order_id:
+            if self.maker_order_ts == 0:
+                self.maker_order_ts = ts
+            
+            if self.maker_order_ts > 0 and (ts - self.maker_order_ts) > self.maker_timeout_ms:
+                # Maker timeout exceeded, cancel the order
+                self.bus.publish('OUTBOUND_INTENT', {
+                    'action': 'CANCEL_ORDER',
+                    'order_id': self.active_maker_order_id,
+                    'symbol': self.target
+                })
+                self.state = 'IDLE'
+                self.active_maker_order_id = None
+                self.pending_leg2 = None
+                self.maker_order_ts = 0
+
     def _on_order_update(self, payload: dict):
         status = payload.get('status')
         order_id = payload.get('order_id')
         
         if self.state == 'LEGGING_MAKER_ENTRY' and order_id == self.active_maker_order_id:
             if status == 'FILLED' and self.pending_leg2 is not None:
-                # Leg 1 Filled! Immediately send Market order for Leg 2
+                # Leg 1 Filled! Immediately send Market/Aggressive Limit order for Leg 2
                 self.bus.publish('OUTBOUND_INTENT', {
                     'action': 'PLACE_ORDER',
                     'order_id': self.pending_leg2['order_id'],
                     'symbol': self.pending_leg2['symbol'],
                     'side': self.pending_leg2['side'],
                     'type': self.pending_leg2['type'],
+                    'price': self.pending_leg2.get('price'),
                     'qty': self.pending_leg2['qty']
                 })
                 self.state = 'HEDGED'
                 self.active_maker_order_id = None
                 self.pending_leg2 = None
+                self.maker_order_ts = 0
                 
             elif status in ['CANCELED', 'REJECTED', 'EXPIRED']:
                 # Legging failed
                 self.state = 'IDLE'
                 self.active_maker_order_id = None
                 self.pending_leg2 = None
+                self.maker_order_ts = 0
 
 # ==========================================
 # 6. ENGINE ENTRY POINT
@@ -517,6 +636,7 @@ class TradingEngine:
         self.bus = EventBus()
         self.model = StatArbModel(self.bus, target=target, feature=feature)
         self.signal_generator = SignalGenerator(self.bus, target=target, feature=feature)
+        self.background_worker = BackgroundAnalyticsWorker(self.bus)
         self.portfolio = PortfolioManager(self.bus, target=target, feature=feature)
         self.execution = ExecutionManager(self.bus, target=target, feature=feature, portfolio=self.portfolio)
         self.target = target
@@ -524,6 +644,17 @@ class TradingEngine:
         self.last_ts = 0
         self.last_1s_timer = 0
         self.last_1m_timer = 0
+        self.latest_regime = {
+            'hurst': 0.5,
+            'half_life': 0.0,
+            'adf_pvalue': 1.0,
+            'volatility': 0.0,
+            'toxic': False
+        }
+        self.bus.subscribe('REGIME_CHANGE', self._on_regime_change)
+
+    def _on_regime_change(self, payload: dict):
+        self.latest_regime.update(payload)
 
     def configure_strategy(self, target: str, feature: str):
         self.target = target.upper()
@@ -532,12 +663,21 @@ class TradingEngine:
         self.bus = EventBus()
         self.model = StatArbModel(self.bus, target=self.target, feature=self.feature)
         self.signal_generator = SignalGenerator(self.bus, target=self.target, feature=self.feature)
+        self.background_worker = BackgroundAnalyticsWorker(self.bus)
         self.portfolio = PortfolioManager(self.bus, target=self.target, feature=self.feature)
         self.execution = ExecutionManager(self.bus, target=self.target, feature=self.feature, portfolio=self.portfolio)
         
         self.last_ts = 0
         self.last_1s_timer = 0
         self.last_1m_timer = 0
+        self.latest_regime = {
+            'hurst': 0.5,
+            'half_life': 0.0,
+            'adf_pvalue': 1.0,
+            'volatility': 0.0,
+            'toxic': False
+        }
+        self.bus.subscribe('REGIME_CHANGE', self._on_regime_change)
 
     def process_events(self, events: List[dict]):
         intents = []
@@ -593,7 +733,10 @@ class TradingEngine:
                 'beta': self.model.beta,
                 'is_ready': self.model.is_ready,
                 'target_price': self.model.target_price,
-                'feature_price': self.model.feature_price
+                'feature_price': self.model.feature_price,
+                'hurst': self.latest_regime.get('hurst', 0.5),
+                'half_life': self.latest_regime.get('half_life', 0.0),
+                'adf_pvalue': self.latest_regime.get('adf_pvalue', 1.0)
             },
             'toxicity_flag': self.signal_generator.is_toxic,
             'execution_state': self.execution.state,
@@ -618,6 +761,59 @@ def configure_strategy(target: str, feature: str):
 
 def clear_data():
     engine_instance.clear_data()
+
+def run_adhoc_analysis(payload: dict):
+    from public.python.analytics_core import calculate_rolling_metrics
+    import pandas as pd
+    import numpy as np
+    
+    target_data = payload.get('targetData', [])
+    feature_data = payload.get('featureData', [])
+    window_size = int(payload.get('windowSize', 800))
+    
+    if not target_data or not feature_data:
+        return {'error': 'No data provided'}
+        
+    df_target = pd.DataFrame(target_data, columns=['timestamp', 'Close'])
+    df_target['timestamp'] = pd.to_datetime(df_target['timestamp'], unit='ms')
+    df_target.set_index('timestamp', inplace=True)
+    
+    df_feature = pd.DataFrame(feature_data, columns=['timestamp', 'Feature_Price'])
+    df_feature['timestamp'] = pd.to_datetime(df_feature['timestamp'], unit='ms')
+    df_feature.set_index('timestamp', inplace=True)
+    
+    df_in = df_target.join(df_feature, how='outer').ffill().dropna()
+    
+    if len(df_in) < window_size:
+        return {'error': f'Not enough overlapping data points ({len(df_in)}) for the given window size ({window_size})'}
+        
+    df_calc = calculate_rolling_metrics(df_in, window_size)
+    z_scores = df_calc['Z_Score'].replace([np.inf, -np.inf], np.nan).dropna().values
+    
+    if len(z_scores) == 0:
+        return {'error': 'Failed to calculate Z-scores'}
+        
+    hist, bin_edges = np.histogram(z_scores, bins=50, density=False)
+    
+    mean_z = np.mean(z_scores)
+    std_z = np.std(z_scores)
+    recommended_sigma = std_z * 2.0
+    
+    bins_data = []
+    for i in range(len(hist)):
+        bin_center = (bin_edges[i] + bin_edges[i+1]) / 2.0
+        bins_data.append({
+            'bin': float(bin_center),
+            'count': int(hist[i])
+        })
+        
+    return {
+        'bins': bins_data,
+        'recommended_sigma': float(recommended_sigma),
+        'mean': float(mean_z),
+        'std': float(std_z),
+        'total_points': len(z_scores)
+    }
 
 def update_strategy(style, speed):
     # Stub for UI compliance

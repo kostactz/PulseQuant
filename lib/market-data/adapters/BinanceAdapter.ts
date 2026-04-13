@@ -32,12 +32,7 @@ export class BinanceAdapter implements MarketDataAdapter {
   }
   
   private get restBaseUrl(): string {
-    const isBrowser = typeof window !== 'undefined';
-    if (isBrowser) {
-      return this.isTestnet ? '/binance-api/testnet' : '/binance-api/mainnet';
-    } else {
-      return this.isTestnet ? 'https://testnet.binancefuture.com' : 'https://fapi.binance.com';
-    }
+    return this.isTestnet ? 'https://testnet.binancefuture.com' : 'https://fapi.binance.com';
   }
   
   private get wsBaseUrl(): string {

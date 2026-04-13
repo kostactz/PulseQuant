@@ -45,6 +45,8 @@ htmlcov/
 *.pyc
 
 # exports
+out/
+reports/
 replay_report.json
 *.parquet
 *report.png

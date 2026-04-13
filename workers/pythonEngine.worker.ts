@@ -300,6 +300,23 @@ configure_strategy("${safeTarget}", "${safeFeature}")
         console.error('[Worker] Auto trade error:', err);
         postMessage({ type: 'ERROR', error: String(err) });
       }
+    } else if (e.data.type === 'RUN_ADHOC') {
+      try {
+        const adhocFn = pyodide.globals.get('run_adhoc_analysis');
+        let pyPayload = pyodide.toPy(e.data.payload);
+        const results = adhocFn(pyPayload);
+        let jsResults = results;
+        if (results && typeof results.toJs === 'function') jsResults = results.toJs({ dict_converter: Object.fromEntries });
+        
+        postMessage({ type: 'ADHOC_RESULT', data: jsResults });
+        
+        if (results && typeof results.destroy === 'function') results.destroy();
+        if (pyPayload && typeof pyPayload.destroy === 'function') pyPayload.destroy();
+        if (adhocFn && typeof adhocFn.destroy === 'function') adhocFn.destroy();
+      } catch (err) {
+        console.error('[Worker] Adhoc error:', err);
+        postMessage({ type: 'ERROR', error: String(err) });
+      }
     } else if (e.data.type === 'UPDATE_STRATEGY') {
       try {
         const style = validateStyle(e.data.style);

@@ -51,12 +51,15 @@ def test_async_legging_state_machine():
     assert taker_intent['action'] == 'PLACE_ORDER'
     assert taker_intent['symbol'] == 'ETH'
     assert taker_intent['side'] == 'SELL'
-    assert taker_intent['type'] == 'MARKET'
+    assert taker_intent['type'] == 'LIMIT'
     
     # Expected Qty of Feature = Qty_Y * (Price_Y / Price_X) * Beta
     # = exec_mgr.base_size * (100 / 10) * 0.5 = base_size * 5
     expected_qty = exec_mgr.base_size * 5.0
     assert math.isclose(taker_intent['qty'], expected_qty)
+    
+    # Check slippage (5 bps = 0.0005. Price = 10.0, Sell order price = 10 * (1 - 0.0005) = 9.995)
+    assert taker_intent['price'] < 10.0
     
     # 4. Simulate Taker Fill
     bus.publish('ORDER_UPDATE', {
@@ -82,6 +85,8 @@ def test_async_legging_state_machine():
     assert 'BTC' in symbols
     assert 'ETH' in symbols
     
-    # Both should be MARKET orders to close
-    assert close_intent_1['type'] == 'MARKET'
-    assert close_intent_2['type'] == 'MARKET'
+    # Both should be LIMIT orders with slippage protection
+    assert close_intent_1['type'] == 'LIMIT'
+    assert close_intent_2['type'] == 'LIMIT'
+    assert 'price' in close_intent_1
+    assert 'price' in close_intent_2
