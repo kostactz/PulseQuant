@@ -1,5 +1,5 @@
 import Module from 'module';
-import { vi } from 'vitest';
+import { vi, beforeEach } from 'vitest';
 
 const originalRequire = Module.prototype.require;
 
@@ -58,18 +58,99 @@ process.on('uncaughtException', (error: any) => {
   throw error;
 });
 
+const matchMediaMock = function(query: string) {
+  return {
+    matches: false,
+    media: query,
+    onchange: null,
+    addListener: vi.fn(), // deprecated
+    removeListener: vi.fn(), // deprecated
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  };
+};
+
 if (typeof window !== 'undefined') {
   Object.defineProperty(window, 'matchMedia', {
     writable: true,
-    value: vi.fn().mockImplementation(query => ({
-      matches: false,
-      media: query,
-      onchange: null,
-      addListener: vi.fn(), // deprecated
-      removeListener: vi.fn(), // deprecated
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-      dispatchEvent: vi.fn(),
-    })),
+    value: vi.fn(matchMediaMock),
+  });
+}
+if (typeof global !== 'undefined') {
+  Object.defineProperty(global, 'matchMedia', {
+    writable: true,
+    value: vi.fn(matchMediaMock),
+  });
+}
+if (typeof globalThis !== 'undefined') {
+  Object.defineProperty(globalThis, 'matchMedia', {
+    writable: true,
+    value: vi.fn(matchMediaMock),
+  });
+}
+
+beforeEach(() => {
+  if (typeof window !== 'undefined') {
+    Object.defineProperty(window, 'matchMedia', {
+      writable: true,
+      value: vi.fn(matchMediaMock),
+    });
+  }
+});
+
+if (typeof HTMLCanvasElement !== 'undefined') {
+  HTMLCanvasElement.prototype.getContext = () => {
+    return {
+      fillRect: () => {},
+      clearRect: () => {},
+      getImageData: (x: number, y: number, w: number, h: number) => {
+        return {
+          data: new Array(w * h * 4),
+        };
+      },
+      putImageData: () => {},
+      createImageData: () => { return []; },
+      setTransform: () => {},
+      drawImage: () => {},
+      save: () => {},
+      fillText: () => {},
+      restore: () => {},
+      beginPath: () => {},
+      moveTo: () => {},
+      lineTo: () => {},
+      closePath: () => {},
+      stroke: () => {},
+      translate: () => {},
+      scale: () => {},
+      rotate: () => {},
+      arc: () => {},
+      fill: () => {},
+      measureText: () => {
+        return { width: 0 };
+      },
+      transform: () => {},
+      rect: () => {},
+      clip: () => {},
+    } as any;
+  };
+
+  Object.defineProperty(HTMLCanvasElement.prototype, 'clientWidth', {
+    configurable: true,
+    get() { return 100; },
+  });
+  Object.defineProperty(HTMLCanvasElement.prototype, 'clientHeight', {
+    configurable: true,
+    get() { return 100; },
+  });
+  Object.defineProperty(HTMLCanvasElement.prototype, 'width', {
+    configurable: true,
+    get() { return 100; },
+    set() {},
+  });
+  Object.defineProperty(HTMLCanvasElement.prototype, 'height', {
+    configurable: true,
+    get() { return 100; },
+    set() {},
   });
 }
