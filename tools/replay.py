@@ -75,14 +75,14 @@ def process_intents(engine, intents, pending_limit_orders, row_ts):
                     'transactionTime': row_ts
                 }}])
             else:
-                # LIMIT order, wait a few ticks
+                # LIMIT order, wait some time in ms
                 pending_limit_orders.append({
                     'order_id': order_id,
                     'symbol': symbol,
                     'side': side,
                     'qty': qty,
                     'price': price,
-                    'wait_ticks': 3,
+                    'wait_ms': 100, # 100ms simulated fill delay
                     'ts': row_ts
                 })
                 
@@ -117,10 +117,12 @@ def run_capture(engine, rows, chunk_size=1000):
             
         # Check pending limit orders
         filled = []
-        for o in pending_limit_orders:
-            o['wait_ticks'] -= 1
-            if o['wait_ticks'] <= 0:
-                filled.append(o)
+        if pending_limit_orders and batch:
+            last_event = batch[-1]
+            current_ts = last_event.get('data', last_event).get('timestamp', int(time.time() * 1000))
+            for o in pending_limit_orders:
+                if current_ts - o['ts'] >= o['wait_ms']:
+                    filled.append(o)
                 
         for o in filled:
             engine.process_events([{'type': 'EXECUTION_REPORT', 'data': {

@@ -24,9 +24,19 @@ class EventBus:
 
     def publish_async(self, topic: str, payload: Any):
         """Offload heavy tasks to a background thread so the hot path isn't blocked."""
-        if topic in self.subscribers:
-            for callback in self.subscribers[topic]:
-                self.thread_pool.submit(callback, payload)
+        import sys
+        if sys.platform == 'emscripten':
+            # WASM/Pyodide typically lacks robust threading, so we execute synchronously or handle separately
+            if topic in self.subscribers:
+                for callback in self.subscribers[topic]:
+                    try:
+                        callback(payload)
+                    except Exception as e:
+                        print(f"Async Fallback Error: {e}")
+        else:
+            if topic in self.subscribers:
+                for callback in self.subscribers[topic]:
+                    self.thread_pool.submit(callback, payload)
 
 
 # ==========================================
@@ -251,6 +261,10 @@ class SignalGenerator:
         self.exit_threshold = 0.0
         self.max_half_life = 7200  # in periods
         
+        self.maker_fee = 0.0002
+        self.taker_fee = 0.0005
+        self.min_profit_bps = 2.0
+        
         self.is_toxic = False
         
         # Downsampled history buffers for low-freq math
@@ -269,8 +283,9 @@ class SignalGenerator:
         ts = payload['timestamp']
         # Keep 1 data point per second roughly for history
         if ts - self.last_hist_ts >= 1000:
-            self.history_target.append(payload['target_price'])
-            self.history_feature.append(payload['feature_price'])
+            import math
+            self.history_target.append(math.log(payload['target_price']))
+            self.history_feature.append(math.log(payload['feature_price']))
             self.last_hist_ts = ts
             
             # Maintain max history buffer length (e.g. 5000)
@@ -278,14 +293,40 @@ class SignalGenerator:
                 self.history_target.pop(0)
                 self.history_feature.pop(0)
                 
-        z_score = payload['z_score']
+        import math
+        target_ask = payload.get('target_ask', payload.get('target_price', 0.0))
+        target_bid = payload.get('target_bid', payload.get('target_price', 0.0))
+        feature_ask = payload.get('feature_ask', payload.get('feature_price', 0.0))
+        feature_bid = payload.get('feature_bid', payload.get('feature_price', 0.0))
+        beta = payload.get('beta', 1.0)
+        spread_mean = payload.get('spread_mean', 0.0)
+        spread_std = payload.get('spread_std', 0.0)
+        
+        if spread_std > 1e-8 and target_ask > 0 and feature_bid > 0 and target_bid > 0 and feature_ask > 0:
+            if beta >= 0:
+                long_spread_val = math.log(target_ask) - beta * math.log(feature_bid)
+                short_spread_val = math.log(target_bid) - beta * math.log(feature_ask)
+            else:
+                long_spread_val = math.log(target_ask) - beta * math.log(feature_ask)
+                short_spread_val = math.log(target_bid) - beta * math.log(feature_bid)
+                
+            long_z_score = (long_spread_val - spread_mean) / spread_std
+            short_z_score = (short_spread_val - spread_mean) / spread_std
+        else:
+            long_z_score = 0.0
+            short_z_score = 0.0
+            
+        z_score = payload.get('z_score', 0.0) # mid-price for tracking/exit
+        
+        expected_edge_long = (abs(long_z_score) * spread_std) - (self.maker_fee + self.taker_fee)
+        expected_edge_short = (abs(short_z_score) * spread_std) - (self.maker_fee + self.taker_fee)
         
         # Entry signals
         if not self.is_toxic:
-            if z_score < -self.entry_threshold:
-                self.bus.publish('SIGNAL_GENERATED', {'direction': 'LONG_SPREAD', 'z_score': z_score})
-            elif z_score > self.entry_threshold:
-                self.bus.publish('SIGNAL_GENERATED', {'direction': 'SHORT_SPREAD', 'z_score': z_score})
+            if long_z_score < -self.entry_threshold and expected_edge_long * 10000 > self.min_profit_bps:
+                self.bus.publish('SIGNAL_GENERATED', {'direction': 'LONG_SPREAD', 'z_score': long_z_score})
+            elif short_z_score > self.entry_threshold and expected_edge_short * 10000 > self.min_profit_bps:
+                self.bus.publish('SIGNAL_GENERATED', {'direction': 'SHORT_SPREAD', 'z_score': short_z_score})
                 
         # Exit logic
         if abs(z_score) <= self.exit_threshold:
@@ -386,6 +427,9 @@ class PortfolioManager:
         self.feature = feature
         self.positions = {target: 0.0, feature: 0.0}
         self.cash = 100000.0
+        self.total_fees_paid = 0.0
+        self.realized_pnl = 0.0
+        self.avg_entry_prices = {target: 0.0, feature: 0.0}
         
         self.bus.subscribe('ORDER_UPDATE', self._on_order_update)
         
@@ -396,12 +440,41 @@ class PortfolioManager:
             qty = float(payload.get('filled_qty', 0.0))
             price = float(payload.get('price', 0.0))
             side = payload.get('side', '')
+            is_maker = payload.get('is_maker', False) # If engine/exchange provides it
+            
+            fee_rate = 0.0002 if is_maker else 0.0005
+            notional = qty * price
+            fee = notional * fee_rate
             
             sign = 1.0 if side == 'BUY' else -1.0
             
             if symbol in self.positions:
-                self.positions[symbol] += qty * sign
-                self.cash -= qty * price * sign
+                prev_pos = self.positions[symbol]
+                new_pos = prev_pos + (qty * sign)
+                
+                # Realized PnL Calculation
+                if (prev_pos > 0 and side == 'SELL') or (prev_pos < 0 and side == 'BUY'):
+                    # Reducing position
+                    closed_qty = min(abs(prev_pos), qty)
+                    entry_price = self.avg_entry_prices[symbol]
+                    pnl = (price - entry_price) * closed_qty * (1.0 if prev_pos > 0 else -1.0)
+                    self.realized_pnl += pnl
+                    
+                    # If position flipped, update avg entry for the remaining qty
+                    if (prev_pos > 0 and new_pos < 0) or (prev_pos < 0 and new_pos > 0):
+                        self.avg_entry_prices[symbol] = price
+                else:
+                    # Increasing position
+                    total_cost = (abs(prev_pos) * self.avg_entry_prices[symbol]) + (qty * price)
+                    self.avg_entry_prices[symbol] = total_cost / abs(new_pos) if new_pos != 0 else 0.0
+                    
+                if abs(new_pos) < 1e-8:
+                    new_pos = 0.0
+                    self.avg_entry_prices[symbol] = 0.0
+                    
+                self.positions[symbol] = new_pos
+                self.cash -= (qty * price * sign) + fee
+                self.total_fees_paid += fee
 
     def get_nav(self, target_price: float, feature_price: float) -> float:
         nav = self.cash
@@ -427,11 +500,16 @@ class ExecutionManager:
         
         self.state = "IDLE"
         self.active_maker_order_id = None
-        self.pending_leg2 = None
+        self.pending_leg2_template = None
         
         self.latest_beta = 1.0
         self.target_price = 0.0
         self.feature_price = 0.0
+        self.target_bid = 0.0
+        self.target_ask = 0.0
+        self.feature_bid = 0.0
+        self.feature_ask = 0.0
+        self.maker_filled_qty = 0.0
         
         self.base_size = 0.1 # Trade size for the target asset
         self.maker_timeout_ms = 5000  # Dynamic based on regime
@@ -461,37 +539,26 @@ class ExecutionManager:
         # Higher volatility -> higher slippage tolerance to ensure fills
         self.slippage_bps = max(1.0, min(25.0, vol * 10000))
         
-    def _on_timer(self, payload: dict):
-        ts = payload.get('timestamp', 0)
-        if self.state == 'LEGGING_MAKER_ENTRY' and self.active_maker_order_id:
-            if self.maker_order_ts > 0 and (ts - self.maker_order_ts) > self.maker_timeout_ms:
-                # Maker timeout exceeded, cancel the order
-                self.bus.publish('OUTBOUND_INTENT', {
-                    'action': 'CANCEL_ORDER',
-                    'order_id': self.active_maker_order_id,
-                    'symbol': self.target
-                })
-                self.state = 'IDLE'
-                self.active_maker_order_id = None
-                self.pending_leg2 = None
-                self.maker_order_ts = 0
+
 
     def _on_model_update(self, payload: dict):
         if payload.get('is_ready'):
             self.latest_beta = float(payload.get('beta', 1.0))
             self.target_price = float(payload.get('target_price', 0.0))
             self.feature_price = float(payload.get('feature_price', 0.0))
+            self.target_bid = float(payload.get('target_bid', self.target_price))
+            self.target_ask = float(payload.get('target_ask', self.target_price))
+            self.feature_bid = float(payload.get('feature_bid', self.feature_price))
+            self.feature_ask = float(payload.get('feature_ask', self.feature_price))
 
     def _on_signal(self, payload: dict):
         direction = payload.get('direction')
         
         if direction == 'LONG_SPREAD' and self.state == 'IDLE':
-            # Buy Target (Maker), Sell Feature (Taker)
-            self._enter_spread('BUY', 'SELL')
+            self._enter_spread('BUY')
             
         elif direction == 'SHORT_SPREAD' and self.state == 'IDLE':
-            # Sell Target (Maker), Buy Feature (Taker)
-            self._enter_spread('SELL', 'BUY')
+            self._enter_spread('SELL')
             
         elif direction == 'CLOSE_SPREAD':
             if self.state == 'LEGGING_MAKER_ENTRY':
@@ -538,36 +605,33 @@ class ExecutionManager:
                         'qty': abs(feature_pos)
                     })
 
-    def _enter_spread(self, target_side: str, feature_side: str):
+    def _enter_spread(self, target_side: str):
         if self.feature_price == 0 or self.target_price == 0:
             return
             
         self.state = 'LEGGING_MAKER_ENTRY'
         self.active_maker_order_id = str(uuid.uuid4())
-        
-        # We need a timer timestamp. Let's use the last known engine tick timestamp
-        # or we just rely on the next TIMER_1S to set it if it's 0
         self.maker_order_ts = 0 
+        self.maker_filled_qty = 0.0
         
-        # Calculate feature qty based on Beta and Notional ratio
-        # Feature Notional = Target Notional * Beta
-        feature_qty = self.base_size * (self.target_price / self.feature_price) * abs(self.latest_beta)
+        if self.latest_beta >= 0:
+            feature_side = 'SELL' if target_side == 'BUY' else 'BUY'
+        else:
+            feature_side = target_side
+            
+        maker_price = self.target_bid if target_side == 'BUY' else self.target_ask
         
-        # Slippage Control: Instead of purely MARKET, create an aggressive LIMIT order
-        # for the Taker leg to avoid unbounded slippage in thin markets.
         slip_ratio = self.slippage_bps / 10000.0
         if feature_side == 'BUY':
-            taker_price = self.feature_price * (1.0 + slip_ratio)
+            taker_price = self.feature_ask * (1.0 + slip_ratio)
         else:
-            taker_price = self.feature_price * (1.0 - slip_ratio)
+            taker_price = self.feature_bid * (1.0 - slip_ratio)
             
-        self.pending_leg2 = {
-            'order_id': str(uuid.uuid4()),
+        self.pending_leg2_template = {
             'symbol': self.feature,
             'side': feature_side,
             'type': 'LIMIT',
-            'price': taker_price,
-            'qty': feature_qty
+            'price': taker_price
         }
         
         self.bus.publish('OUTBOUND_INTENT', {
@@ -576,8 +640,8 @@ class ExecutionManager:
             'symbol': self.target,
             'side': target_side,
             'type': 'LIMIT',
-            'qty': self.base_size,
-            'price': self.target_price
+            'qty': round(self.base_size, 3),
+            'price': round(maker_price, 2)
         })
 
     def _on_timer(self, payload: dict):
@@ -605,28 +669,40 @@ class ExecutionManager:
         order_id = payload.get('order_id')
         
         if self.state == 'LEGGING_MAKER_ENTRY' and order_id == self.active_maker_order_id:
-            if status == 'FILLED' and self.pending_leg2 is not None:
-                # Leg 1 Filled! Immediately send Market/Aggressive Limit order for Leg 2
+            qty_filled = float(payload.get('filled_qty', 0.0))
+            
+            if qty_filled > self.maker_filled_qty and self.pending_leg2_template is not None:
+                newly_filled = qty_filled - self.maker_filled_qty
+                self.maker_filled_qty = qty_filled
+                
+                taker_qty = newly_filled * (self.target_price / self.feature_price) * abs(self.latest_beta)
+                # Production enforcement: Round to exchange lot size (e.g. 3 decimal places)
+                taker_qty = round(taker_qty, 3)
+                
                 self.bus.publish('OUTBOUND_INTENT', {
                     'action': 'PLACE_ORDER',
-                    'order_id': self.pending_leg2['order_id'],
-                    'symbol': self.pending_leg2['symbol'],
-                    'side': self.pending_leg2['side'],
-                    'type': self.pending_leg2['type'],
-                    'price': self.pending_leg2.get('price'),
-                    'qty': self.pending_leg2['qty']
+                    'order_id': str(uuid.uuid4()),
+                    'symbol': self.pending_leg2_template['symbol'],
+                    'side': self.pending_leg2_template['side'],
+                    'type': self.pending_leg2_template['type'],
+                    'price': self.pending_leg2_template.get('price'),
+                    'qty': taker_qty,
+                    'price': round(self.pending_leg2_template.get('price', 0.0), 2)
                 })
+                
+            if status == 'FILLED':
                 self.state = 'HEDGED'
                 self.active_maker_order_id = None
-                self.pending_leg2 = None
+                self.pending_leg2_template = None
                 self.maker_order_ts = 0
+                self.maker_filled_qty = 0.0
                 
             elif status in ['CANCELED', 'REJECTED', 'EXPIRED']:
-                # Legging failed
                 self.state = 'IDLE'
                 self.active_maker_order_id = None
-                self.pending_leg2 = None
+                self.pending_leg2_template = None
                 self.maker_order_ts = 0
+                self.maker_filled_qty = 0.0
 
 # ==========================================
 # 6. ENGINE ENTRY POINT
@@ -708,6 +784,10 @@ class TradingEngine:
             elif ev_type == 'EXECUTION_REPORT':
                 self.bus.publish('ORDER_UPDATE', data)
 
+        if 'OUTBOUND_INTENT' in self.bus.subscribers:
+            if on_intent in self.bus.subscribers['OUTBOUND_INTENT']:
+                self.bus.subscribers['OUTBOUND_INTENT'].remove(on_intent)
+
         return {'intents': intents}
 
     def _check_timers(self, current_ts: int):
@@ -725,15 +805,24 @@ class TradingEngine:
         return {
             'portfolio_value': self.portfolio.get_nav(self.model.target_price, self.model.feature_price),
             'capital': self.portfolio.cash,
+            'realized_pnl': getattr(self.portfolio, 'realized_pnl', 0.0),
+            'total_fees_paid': getattr(self.portfolio, 'total_fees_paid', 0.0),
             'positions': self.portfolio.positions,
+            'target_position': self.portfolio.positions.get(self.target, 0.0),
+            'feature_position': self.portfolio.positions.get(self.feature, 0.0),
             'net_delta': self.portfolio.get_net_delta(self.model.target_price, self.model.feature_price),
             'spread_metrics': {
                 'current_spread': self.model.spread,
                 'z_score': self.model.z_score,
                 'beta': self.model.beta,
+                'hedge_ratio': self.model.beta,
                 'is_ready': self.model.is_ready,
                 'target_price': self.model.target_price,
                 'feature_price': self.model.feature_price,
+                'target_bid': self.model.target_bid,
+                'target_ask': self.model.target_ask,
+                'feature_bid': self.model.feature_bid,
+                'feature_ask': self.model.feature_ask,
                 'hurst': self.latest_regime.get('hurst', 0.5),
                 'half_life': self.latest_regime.get('half_life', 0.0),
                 'adf_pvalue': self.latest_regime.get('adf_pvalue', 1.0)

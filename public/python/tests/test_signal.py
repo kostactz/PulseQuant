@@ -23,7 +23,19 @@ def test_signal_generator_basic():
     assert len(signals) == 0
     
     # Trigger long spread signal
-    sg._on_model_updated({'is_ready': True, 'timestamp': 2000, 'target_price': 10.0, 'feature_price': 5.0, 'z_score': -2.5})
+    import math
+    sg.maker_fee = 0
+    sg.taker_fee = 0
+    sg._on_model_updated({
+        'is_ready': True,
+        'timestamp': 2000,
+        'target_price': 10.0,
+        'feature_price': 150.0,
+        'beta': 1.0,
+        'spread_mean': 0.0,
+        'spread_std': 1.0,
+        'z_score': -2.5
+    })
     assert len(signals) == 1
     assert signals[-1]['direction'] == 'LONG_SPREAD'
 
@@ -54,8 +66,7 @@ def test_signal_generator_timers():
         
     sg._on_timer_1m({'timestamp': 100000})
     
-    import time
-    time.sleep(0.5) # Wait for thread pool to finish
+    bus.thread_pool.shutdown(wait=True)
     
     assert len(regimes) > 0
     assert regimes[-1]['toxic'] is True

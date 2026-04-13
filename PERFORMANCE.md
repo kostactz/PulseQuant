@@ -1,60 +1,43 @@
 PulseQuant - Performance & Algorithmic Design
 ==========================================
 
-This document describes the system’s live performance assumptions and basic algorithm design. 
+This document outlines the performance constraints and quantitative algorithms powering the Statistical Arbitrage engine.
 
 High-level goals
 -----------------
-- Per-tick work is bounded and predictable; prefer O(1) per tick and O(log N) for book updates.
-- Keep hot paths in native typed buffers and parameters so JS/Pyodide crossing is minimal.
-- Maintain working state (best bid/ask + top-K order book) instead of full historical recomputation.
-- Keep network and execution paths resilient to websocket disconnects and order-frequency limits.
+- Per-tick computations must be bounded and predictable, specifically achieving $O(1)$ constant time execution in the core math engine.
+- Complete thread isolation: The main UI thread must not handle floating-point math, linear regression, or strategy logic. All heavy lifting happens in the WebWorker.
+- Memory isolation: Changing market pairs must immediately tear down and reclaim associated buffers to avoid state bleed.
 
-Critical components and current complexity
+Critical Components & Complexity
 -----------------------------------------
 
-1) BinanceAdapter order book (lib/market-data/adapters/BinanceAdapter.ts)
-   - Data structures: two sorted arrays, `obBids` (descending) and `obAsks` (ascending).
-   - Snapshot handling: full depth fetch (`limit=1000`) on connect, then buffered updates are applied in sequence.
-   - Live updates: binary search index (O(log N)), then splice insert/update/delete (O(N) worst-case). Top-level updates dominate; we keep book depth reasonable with 1000 entries.
-   - Top of book: uses `@bookTicker` for best bid/ask to avoid level-1 drift; `@depth@100ms` for full depth maintenance.
-   - Time-coherent delta OFI: store `prevBids` / `prevAsks` for top 5 levels and compute weighted level deltas every `emitTick`.
-   - Depth rollup: group by price grain (`GROUP_SIZE=10`) over 20 levels in `groupLevels`; linear in `LIMIT`.
+1) BinanceAdapter Order Book (`lib/market-data/adapters/BinanceAdapter.ts`)
+   - Data structures: Two arrays (`obBids`, `obAsks`) managing the order book up to 1000 levels.
+   - Live updates: Deltas arrive via `@depth@100ms`, inserted using a fast binary search index ($O(\log N)$) followed by array splices (worst case $O(N)$). 
+   - Time-coherent delta OFI (Order Flow Imbalance): Stored `prevBids`/`prevAsks` compared to current top 5 levels via simple differences ($O(1)$) to inject microstructure context.
+   - Reconnections: Designed to handle socket closures (or deliberate pair-switching tear-downs) gracefully by dumping buffers and repopulating a fresh snapshot.
 
-2) Latency controls and reliability
-   - reconnect logic with back-off (`setTimeout` 3 sec), reset snapshot state, and replay buffered depth messages.
-   - listenkey keepalive for user-order stream; robust auth-fatal detection (`-2015`, invalid key) to avoid tight reconnect loops.
-   - OrderManager throttles trading API with token bucket, 50ms loop, cancel-first priority, and exponential retry backoff up to 3 attempts.
+2) Statistical Arbitrage Engine (`public/python/engine.py` & `math.py`)
+   - Core mechanism: The algorithm revolves around cointegration between a Target asset and Feature asset, computed in real-time.
+   - `BivariateRingBuffer`: A fixed-size NumPy structure avoiding DataFrame slicing overhead. Features single $O(1)$ appends.
+   - Rolling moments: Instead of naive `.mean()` or `.cov()` recomputation over a window of length D, the buffer tracks running $Sum_{X}$, $Sum_{Y}$, $Sum_{X^2}$, $Sum_{XY}$. This yields variance, covariance, and rolling Beta in $O(1)$ time per tick.
+   - Periodic Drift Correction: Every 1,000 ticks, full array sums are re-run to eliminate accumulated IEEE-754 floating-point errors from continuous add/subtract operations.
+   - Signal Generator: Transforms raw prices into a spread utilizing the dynamic Beta coefficient, applying Z-Score normalization for mean-reversion trading limits.
 
-3) Indicator engine with ring buffers (public/python/engine.py)
-   - `RingBuffer` uses fixed-size NumPy arrays for O(1) append and running sum/sum-sq maintenance.
-   - periodic drift correction every 1000 appends prevents floating-point error blow-up.
-   - `IndicatorState.update()` is mostly O(1) per tick, plus O(D) for deep-liquidity loops (`dobi_levels=18`).
-   - time-based state update at `update_interval_ms = 25` ms, decoupling tick burst from indicator cadence.
+3) Execution & Re-Initialization
+   - Dynamic pair instantiation: A `configure_strategy(target, feature)` method securely halts execution, destroys old RingBuffers, and resets the PM (Portfolio Manager) memory, preventing "ghost ticks".
+   - The WebWorker bridge deserializes compact `NormalizedTick` payloads and pushes them directly into the Python engine instance.
 
-4) Feature set in indicator pipeline (live behavior)
-   - Micro-price = volume-weighted top-of-book mid with fallback to top-level volume.
-   - VWAP with true volume accumulation + slow exponential fallback when trade volume is zero.
-   - OFI by delta_bid/delta_ask, normalized by rolling stdev (burn-in of half-window), clipped to [-8.7,8.7], with long EMA smoothing.
-   - Dynamic regime thresholds by abs(OFI EMA) ring buffer (p50/p80/p95 via mean+std mapping).
-   - OBI and deep OBI: weighted 18-level imbalance, z-score normalized, clipped ±10, and EMA smoothing.
-   - VPIN-style sweep detection from top-3 resting volume and trade flow.
+Serialization
+-------------
+- The TypeScript to Pyodide/Python bridge uses standard JSON structured clones over WebWorker `postMessage`.
+- We exclusively slice and ship the top 20 depth levels across the boundary, guaranteeing serialization overhead is well under 1 millisecond.
 
-5) Strategy & risk controls in the same pipeline
-   - toxicity gate uses OFI EMA + OBI (raw and EMA) with resting multipliers.
-   - configurable speed/style multipliers adjust all window sizes up to 2000 levels with a single parameter.
-   - explicit cancel thresholds prevent execution in high-microstructure toxicity.
-
-Message passing and serialization
----------------------------------
-- JS side ships normalized `NormalizedTick` with typed numbers and pre-sliced top-20 depth arrays.
-- Python received arrays are consumed without nested one-off dict reconstructions for most per-tick indicators.
-- Export path supports incremental UI payloads; no full high-frequency history rebuild in engine.
-
-Notes and TODOs
----------------
-- `Array.splice` used in order book remains O(N); a tree/skiplist may be needed.
-- Pyodide bridge uses normal JSON/structured clone for high-level objects; future work can add zero-copy shared memory.
+Future Optimizations
+--------------------
+- Switch from array splicing (`Array.splice`) to a Red-Black Tree or Skip List for deeper, high-liquidity order book handling to eliminate $O(N)$ depth insertions.
+- Explore zero-copy `SharedArrayBuffer` when the Pyodide bridge API matures to further cut messaging latency.
 
 Reference
 ---------

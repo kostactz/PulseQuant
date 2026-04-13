@@ -1,32 +1,35 @@
 # PulseQuant
 
-In-browser medium-frequency trading tool (and simulator), with a React Next.js frontend and a Python trading engine (Pyodide).
+In-browser high-performance Statistical Arbitrage (Stat Arb) trading tool and simulator. Features a React Next.js frontend and a Python trading engine running securely in Pyodide.
 
 - Web stack: Next.js + TypeScript + Tailwind
-- In-browser trading engine: Python (`public/python/engine.py`), invoked through `workers/pythonEngine.worker.ts`
-- Live/data test patterns: Binance adapter plus mock replay feed
-- Paper trading with order book and trade history visualization
+- Core engine: Python (`public/python/engine.py`), sandboxed in WebAssembly via `workers/pythonEngine.worker.ts`
+- Live data: Binance WebSocket adapter with dynamic pair selection (Target vs. Feature assets)
+- Analysis: Real-time Z-Score, Beta, and spread calculation with interactive charting
+- Execution: Paper trading with portfolio tracking and simulated order fills
 - Full test suite: Playwright integration + unit tests (Vitest, PyTest)
 
 ## What is in this repo
 
 - `app/`: Next.js UI pages and routing
-- `components/`: chart, orderbook, trades, setup modal
+- `components/`: Real-time charts, order books, trades, and strategy controls
 - `hooks/`: `useMarketData`, `usePythonWorker`, `useMobile`
 - `lib/market-data`: `MarketDataService`, adapters (`BinanceAdapter`, `MockAdapter`)
-- `lib/order/OrderManager.ts`: paper order logic and fills
-- `lib/security`: credentials and cryptography helpers
-- `public/python`: Pyodide engine and analysis scripts
-- `workers/pythonEngine.worker.ts`: worker bridge between TS and Python
-- `test/`: your unit tests and setup
-- `e2e/`: Playwright end-to-end tests for browser experience (in development)
+- `lib/order/OrderManager.ts`: Paper order logic and execution handling
+- `lib/security`: API credentials and local cryptography helpers
+- `public/python`: Pyodide Stat Arb engine (`engine.py`) and math libraries
+- `workers/pythonEngine.worker.ts`: WebWorker bridge isolating heavy math from the UI thread
+- `test/`: Vitest unit tests for UI and hooks
+- `e2e/`: Playwright end-to-end tests for browser experience
 
 ## Key behaviors
 
-1. Market data enters via `MarketDataService` (live websocket or local mock replay).
-2. Data is throttled/aggregated then sent into Python worker as tick snapshot packages.
-3. `engine.py` maintains rolling indicators, OFI/OBI, VWAP, risk rules, paper orders, and portfolio statistics.
-4. Worker emits compact arrays for charting and UI state updates.
+1. User dynamically selects two assets (Target and Feature) from the UI.
+2. Market data streams via `MarketDataService` using direct Binance WebSockets.
+3. Ticks are packaged and dispatched to the WebWorker, avoiding main-thread blocking.
+4. `engine.py` maintains an $O(1)$ `BivariateRingBuffer` to compute continuous rolling Beta and Z-Scores.
+5. The Worker emits compact strategy signals back to the UI for charting and execution state updates.
+6. When pairs are switched, the engine and WebSockets securely tear down and reset to prevent data corruption.
 
 ## Run locally
 
@@ -36,6 +39,7 @@ In-browser medium-frequency trading tool (and simulator), with a React Next.js f
 
 ## Tests
 
-- Unit (TS): `npm test` (Vitest)
-- Unit (Python): `pytest` (in `public/python/tests` and `public/python/scripts`)
+- Unit (TS): `npm run test:unit` (Vitest)
+- Unit (Python): `npm run test:py` (PyTest for engine logic)
 - E2E: `npm run test:e2e` (Playwright)
+- All: `npm run test`
