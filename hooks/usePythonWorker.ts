@@ -194,5 +194,11 @@ export function usePythonWorker(onIntent?: (intent: any) => void) {
     }
   }, [isReady]);
 
-  return { isReady, metrics, uiDelta, getUIDelta, processBatch, clearData, clearCache, executeTrade, setAutoTrade, updateStrategy, setTradeSize };
+  const configureStrategy = useCallback((target: string, feature: string) => {
+    if (isReady && workerRef.current) {
+      workerRef.current.postMessage({ type: 'CONFIGURE_STRATEGY', payload: { target, feature } });
+    }
+  }, [isReady]);
+
+  return { isReady, metrics, uiDelta, getUIDelta, processBatch, clearData, clearCache, executeTrade, setAutoTrade, updateStrategy, setTradeSize, configureStrategy };
 }

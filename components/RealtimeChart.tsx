@@ -1,4 +1,4 @@
-import { useEffect, useRef, useImperativeHandle, forwardRef } from 'react';
+import React, { useEffect, useRef, useImperativeHandle, forwardRef } from 'react';
 import { createChart, ColorType, IChartApi, ISeriesApi, LineSeries, HistogramSeries, createSeriesMarkers } from 'lightweight-charts';
 
 interface ChartProps {

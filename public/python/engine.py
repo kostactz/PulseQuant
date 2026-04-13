@@ -525,6 +525,20 @@ class TradingEngine:
         self.last_1s_timer = 0
         self.last_1m_timer = 0
 
+    def configure_strategy(self, target: str, feature: str):
+        self.target = target.upper()
+        self.feature = feature.upper()
+        
+        self.bus = EventBus()
+        self.model = StatArbModel(self.bus, target=self.target, feature=self.feature)
+        self.signal_generator = SignalGenerator(self.bus, target=self.target, feature=self.feature)
+        self.portfolio = PortfolioManager(self.bus, target=self.target, feature=self.feature)
+        self.execution = ExecutionManager(self.bus, target=self.target, feature=self.feature, portfolio=self.portfolio)
+        
+        self.last_ts = 0
+        self.last_1s_timer = 0
+        self.last_1m_timer = 0
+
     def process_events(self, events: List[dict]):
         intents = []
         # Temporarily intercept intents from the bus
@@ -598,6 +612,9 @@ def process_events(events):
 
 def get_ui_delta():
     return engine_instance.get_ui_delta()
+
+def configure_strategy(target: str, feature: str):
+    engine_instance.configure_strategy(target, feature)
 
 def clear_data():
     engine_instance.clear_data()

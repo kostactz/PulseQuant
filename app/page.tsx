@@ -42,10 +42,10 @@ export default function Dashboard() {
       executeModeSwitch(newMode);
     }
   };
-  const { isReady, metrics, uiDelta, getUIDelta, processBatch, clearData, clearCache, executeTrade, setAutoTrade, updateStrategy, setTradeSize } = usePythonWorker((intent) => {
+  const { isReady, metrics, uiDelta, getUIDelta, processBatch, clearData, clearCache, executeTrade, setAutoTrade, updateStrategy, setTradeSize, configureStrategy } = usePythonWorker((intent) => {
     if (handleIntentRef.current) handleIntentRef.current(intent);
   });
-  const { latestDepth, latestTick, getAndClearBuffer, clearBuffer, isPlaying, setIsPlaying, isRecording, toggleRecording, executeIntent } = useMarketData(
+  const { latestDepth, latestTick, getAndClearBuffer, clearBuffer, isPlaying, setIsPlaying, isRecording, toggleRecording, executeIntent, setSymbols } = useMarketData(
     isUnlocked, 
     tradingMode,
     (tick) => {
@@ -93,6 +93,38 @@ export default function Dashboard() {
   const [tradeSizeBps, setTradeSizeBps] = useState(100);
   const [showCodeModal, setShowCodeModal] = useState(false);
   const [engineCode, setEngineCode] = useState('');
+
+  const [targetAsset, setTargetAsset] = useState('BTCUSDT');
+  const [featureAsset, setFeatureAsset] = useState('ETHUSDT');
+
+  const AVAILABLE_ASSETS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'ADAUSDT', 'XRPUSDT', 'BNBUSDT'];
+
+  const handlePairChange = async (newTarget: string, newFeature: string) => {
+    if (newTarget === newFeature) return;
+    
+    // Prevent switching if there are active positions
+    if (currentState?.positions) {
+      const hasOpenPos = Object.values(currentState.positions).some((pos) => Math.abs(pos as number) > 1e-8);
+      if (hasOpenPos) {
+        alert("Cannot change pairs while you have an open position. Close it first.");
+        return;
+      }
+    }
+
+    if (isAutoTrading) {
+      setIsAutoTrading(false);
+      setAutoTrade(false);
+    }
+    
+    setTargetAsset(newTarget);
+    setFeatureAsset(newFeature);
+    
+    clearData();
+    clearBuffer();
+    
+    await setSymbols(newTarget, newFeature);
+    configureStrategy(newTarget, newFeature);
+  };
 
   const handleShowCode = async () => {
     if (!engineCode) {
@@ -362,8 +394,19 @@ export default function Dashboard() {
                        tradingMode === 'TESTNET' ? 'Binance Testnet Engine' : 
                        'Binance Mainnet Engine'}
                     </h2>
-                    <div className="text-2xl font-bold text-gray-900 tracking-tight">
-                      ${currentState.portfolio_value?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || '100,000.00'}
+                    <div className="flex gap-4 items-center">
+                      <div className="text-2xl font-bold text-gray-900 tracking-tight">
+                        ${currentState.portfolio_value?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || '100,000.00'}
+                      </div>
+                      <div className="flex gap-2 items-center text-sm ml-4 border-l border-gray-300 pl-4">
+                         <select className="bg-gray-50 border border-gray-200 rounded p-1" value={targetAsset} onChange={(e) => handlePairChange(e.target.value, featureAsset)}>
+                             {AVAILABLE_ASSETS.map(a => <option key={a} disabled={a === featureAsset}>{a}</option>)}
+                         </select>
+                         <span className="text-gray-500">vs</span>
+                         <select className="bg-gray-50 border border-gray-200 rounded p-1" value={featureAsset} onChange={(e) => handlePairChange(targetAsset, e.target.value)}>
+                             {AVAILABLE_ASSETS.map(a => <option key={a} disabled={a === targetAsset}>{a}</option>)}
+                         </select>
+                      </div>
                     </div>
                   </div>
                 </div>

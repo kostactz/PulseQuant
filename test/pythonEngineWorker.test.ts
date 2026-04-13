@@ -18,11 +18,11 @@ afterAll(() => {
 describe('pythonEngine.worker validation helpers', () => {
   beforeAll(async () => {
     (globalThis as any).self = globalThis;
-    const module = await import('../workers/pythonEngine.worker');
-    validateSide = module.validateSide;
-    validateStyle = module.validateStyle;
-    validateSpeed = module.validateSpeed;
-    validateBps = module.validateBps;
+    const workerModule = await import('../workers/pythonEngine.worker');
+    validateSide = workerModule.validateSide;
+    validateStyle = workerModule.validateStyle;
+    validateSpeed = workerModule.validateSpeed;
+    validateBps = workerModule.validateBps;
   });
 
   afterAll(() => {
@@ -74,10 +74,10 @@ describe('pythonEngine.worker validation helpers', () => {
   });
 
   it('validates boolean values', async () => {
-    const module = await import('../workers/pythonEngine.worker');
-    expect(module.validateBoolean(true)).toBe(true);
-    expect(module.validateBoolean(false)).toBe(false);
-    expect(() => module.validateBoolean('true')).toThrow(/Invalid boolean/);
+    const workerModule = await import('../workers/pythonEngine.worker');
+    expect(workerModule.validateBoolean(true)).toBe(true);
+    expect(workerModule.validateBoolean(false)).toBe(false);
+    expect(() => workerModule.validateBoolean('true')).toThrow(/Invalid boolean/);
   });
 });
 
@@ -105,9 +105,9 @@ describe('pythonEngine.worker message flow integration', () => {
     const setTradeSizeMock = vi.fn();
     setTradeSizeMock.destroy = vi.fn();
 
-    const module = await import('../workers/pythonEngine.worker');
-    module._testSetPandasLoaded(true);
-    module._testSetPyodide({
+    const workerModule = await import('../workers/pythonEngine.worker');
+    workerModule._testSetPandasLoaded(true);
+    workerModule._testSetPyodide({
       globals: {
         get: (name: string) => {
           if (name === 'execute_trade') return executeTradeMock;
@@ -119,10 +119,10 @@ describe('pythonEngine.worker message flow integration', () => {
       }
     });
 
-    await module._testSendMessage({ type: 'UPDATE_STRATEGY', style: 'moderate', speed: 'fast' });
-    await module._testSendMessage({ type: 'TRADE', side: 'buy', bps: 50 });
-    await module._testSendMessage({ type: 'SET_AUTO_TRADE', enabled: true });
-    await module._testSendMessage({ type: 'SET_TRADE_SIZE', bps: 200 });
+    await workerModule._testSendMessage({ type: 'UPDATE_STRATEGY', style: 'moderate', speed: 'fast' });
+    await workerModule._testSendMessage({ type: 'TRADE', side: 'buy', bps: 50 });
+    await workerModule._testSendMessage({ type: 'SET_AUTO_TRADE', enabled: true });
+    await workerModule._testSendMessage({ type: 'SET_TRADE_SIZE', bps: 200 });
 
     expect(updateStrategyMock).toHaveBeenCalledWith('moderate', 'fast');
     expect(executeTradeMock).toHaveBeenCalledWith('buy', 50);
@@ -140,9 +140,9 @@ describe('pythonEngine.worker message flow integration', () => {
     const postMessageMock = vi.fn();
     (globalThis as any).postMessage = postMessageMock;
 
-    const module = await import('../workers/pythonEngine.worker');
-    module._testSetPandasLoaded(true);
-    module._testSetPyodide({
+    const workerModule = await import('../workers/pythonEngine.worker');
+    workerModule._testSetPandasLoaded(true);
+    workerModule._testSetPyodide({
       globals: {
         get: () => {
           throw new Error('should not be called for invalid payload');
@@ -150,8 +150,8 @@ describe('pythonEngine.worker message flow integration', () => {
       }
     });
 
-    await module._testSendMessage({ type: 'TRADE', side: 'invalid', bps: 50 });
-    await module._testSendMessage({ type: 'SET_AUTO_TRADE', enabled: 'not-a-bool' });
+    await workerModule._testSendMessage({ type: 'TRADE', side: 'invalid', bps: 50 });
+    await workerModule._testSendMessage({ type: 'SET_AUTO_TRADE', enabled: 'not-a-bool' });
 
     expect(postMessageMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'ERROR' }));
   });

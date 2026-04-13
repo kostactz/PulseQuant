@@ -251,7 +251,20 @@ self.onmessage = async (e: MessageEvent) => {
       } finally {
         if (results && typeof results.destroy === 'function') results.destroy();
       }
-} else if (e.data.type === 'CLEAR') {
+    } else if (e.data.type === 'CONFIGURE_STRATEGY') {
+      try {
+        const safeTarget = String(e.data.payload.target).replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+        const safeFeature = String(e.data.payload.feature).replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+        await pyodide.runPythonAsync(`
+configure_strategy("${safeTarget}", "${safeFeature}")
+        `);
+        latestMetrics = null;
+        postMessage({ type: 'STRATEGY_CONFIGURED', target: safeTarget, feature: safeFeature });
+      } catch (err) {
+        console.error('[Worker] Configure strategy error:', err);
+        postMessage({ type: 'ERROR', error: String(err) });
+      }
+    } else if (e.data.type === 'CLEAR') {
       try {
         pyodide.runPython('clear_data()');
         latestMetrics = null;

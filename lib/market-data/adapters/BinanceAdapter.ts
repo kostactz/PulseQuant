@@ -644,6 +644,43 @@ export class BinanceAdapter implements MarketDataAdapter {
     }
   }
 
+  async setSymbols(target: string, feature: string): Promise<void> {
+    const newSymbols = [target.toLowerCase(), feature.toLowerCase()];
+    
+    if (this.publicWs) {
+      this.isIntentionalDisconnect = true;
+      this.publicWs.close();
+      this.publicWs = null;
+    }
+    
+    this.symbols.forEach(sym => {
+      this.obBids.delete(sym);
+      this.obAsks.delete(sym);
+      this.buffer.delete(sym);
+      this.latestBookTicker.delete(sym);
+      this.accumulatedTradeVol.delete(sym);
+      this.prevBids.delete(sym);
+      this.prevAsks.delete(sym);
+      this.lastUpdateId.delete(sym);
+      this.isSnapshotLoaded.delete(sym);
+    });
+
+    this.symbols = newSymbols;
+    this.symbols.forEach(sym => {
+      this.obBids.set(sym, []);
+      this.obAsks.set(sym, []);
+      this.lastUpdateId.set(sym, 0);
+      this.buffer.set(sym, []);
+      this.isSnapshotLoaded.set(sym, false);
+      this.accumulatedTradeVol.set(sym, 0);
+      this.prevBids.set(sym, []);
+      this.prevAsks.set(sym, []);
+    });
+
+    this.isIntentionalDisconnect = false;
+    this.connectPublic();
+  }
+
   subscribe(symbol: string): void {
     console.log(`[BinanceAdapter] Subscribed to ${symbol}`);
     if (!this.symbols.includes(symbol.toLowerCase())) {

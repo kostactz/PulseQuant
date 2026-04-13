@@ -24,6 +24,7 @@ export interface MarketDataAdapter {
   disconnect(): Promise<void>;
   subscribe(symbol: string): void;
   unsubscribe(symbol: string): void;
+  setSymbols?(target: string, feature: string): Promise<void>;
   onTick(callback: (tick: NormalizedTick) => void): void;
   onExecutionReport?(callback: (report: any) => void): void;
   onSyncState?(callback: (state: any) => void): void;

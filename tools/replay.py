@@ -174,6 +174,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Phase 4 Stat Arb Engine Replay")
     parser.add_argument('--input', '-i', required=True, help="Path to the .jsonl or .jsonl.gz capture file")
     parser.add_argument('--engine', '-e', default='public/python/engine.py', help="Path to engine.py")
+    parser.add_argument('--target', type=str, default='BTCUSDT', help="Target asset symbol")
+    parser.add_argument('--feature', type=str, default='ETHUSDT', help="Feature asset symbol")
     
     args = parser.parse_args()
     
@@ -183,7 +185,7 @@ if __name__ == '__main__':
         sys.exit(1)
         
     engine_module = import_engine(args.engine)
-    engine = engine_module.TradingEngine(target='BTCUSDT', feature='ETHUSDT')
+    engine = engine_module.TradingEngine(target=args.target, feature=args.feature)
     
     final_snapshot = run_capture(engine, rows)
     

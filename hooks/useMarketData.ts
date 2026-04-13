@@ -286,6 +286,12 @@ export function useMarketData(connectEnabled: boolean = true, tradingMode: Tradi
     }
   }, []);
 
+  const setSymbols = useCallback(async (target: string, feature: string) => {
+    if (adapterRef.current && adapterRef.current.setSymbols) {
+      await adapterRef.current.setSymbols(target, feature);
+    }
+  }, []);
+
   return {
     latestDepth,
     latestTick,
@@ -296,5 +302,6 @@ export function useMarketData(connectEnabled: boolean = true, tradingMode: Tradi
     isRecording,
     toggleRecording,
     executeIntent,
+    setSymbols,
   };
 }
