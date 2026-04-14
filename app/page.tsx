@@ -113,7 +113,7 @@ export default function Dashboard() {
         while (currentStart < endTime) {
           const res = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=1m&startTime=${currentStart}&endTime=${endTime}&limit=1500`);
           const data = await res.json();
-          if (!data || data.length === 0) break;
+          if (!data || !Array.isArray(data) || data.length === 0) break;
           data.forEach((k: any) => allKlines.push([k[0], parseFloat(k[4])]));
           currentStart = data[data.length - 1][0] + 1;
         }
@@ -135,12 +135,18 @@ export default function Dashboard() {
     if (!isReady) return;
     try {
       const fetchHistory = async (symbol: string) => {
+        const allKlines: any[] = [];
         const endTime = Date.now();
-        const startTime = endTime - (24 * 60 * 60 * 1000); // 24 hours of 1m data = 1440 points
-        const res = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=1m&startTime=${startTime}&endTime=${endTime}&limit=1500`);
-        const data = await res.json();
-        if (!data || !Array.isArray(data) || data.length === 0) return [];
-        return data.map((k: any) => [k[0], parseFloat(k[4])]);
+        const startTime = endTime - (30 * 24 * 60 * 60 * 1000); // 30 days
+        let currentStart = startTime;
+        while (currentStart < endTime) {
+          const res = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=1m&startTime=${currentStart}&endTime=${endTime}&limit=1500`);
+          const data = await res.json();
+          if (!data || !Array.isArray(data) || data.length === 0) break;
+          data.forEach((k: any) => allKlines.push([k[0], parseFloat(k[4])]));
+          currentStart = data[data.length - 1][0] + 1;
+        }
+        return allKlines;
       };
 
       const targetData = await fetchHistory(target);

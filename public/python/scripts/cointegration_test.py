@@ -426,8 +426,8 @@ if rolling_window == 'auto' or sigma_threshold == 'auto':
     for i in range(0, len(train_df), chunk_size):
         chunk = train_df.iloc[i:i + chunk_size]
         if len(chunk) < 100: continue
-        X_stat = sm.add_constant(chunk['Feature_Price'])
-        Y_stat = chunk['Close']
+        X_stat = sm.add_constant(np.log(chunk['Feature_Price']))
+        Y_stat = np.log(chunk['Close'])
         base_model = sm.OLS(Y_stat, X_stat).fit()
         base_spread = base_model.resid
         hl = get_half_life(base_spread, interval)
@@ -498,8 +498,8 @@ if raw_exceedance_pct > max_expected_pct:
 print("\n[5/7] Calculating Static Hedge Ratio and Testing Cointegration...")
 
 # Calculate static beta for visualization/baseline purposes
-X = sm.add_constant(df['Feature_Price'])
-Y = df['Close']
+X = sm.add_constant(np.log(df['Feature_Price']))
+Y = np.log(df['Close'])
 static_model = sm.OLS(Y, X).fit()
 static_beta = static_model.params['Feature_Price']
 df['Static_Spread'] = static_model.resid 
@@ -512,8 +512,8 @@ try:
     # the ADF lag-search built into the test without losing the macro-equilibrium relationship.
     coint_df = df[['Close', 'Feature_Price']].resample('15min').last().dropna() if len(df) > 10000 else df
     
-    # Use the proper Engle-Granger cointegration test on the downsampled concurrent price series
-    coint_score, p_value, critical_values = coint(coint_df['Close'], coint_df['Feature_Price'])
+    # Use the proper Engle-Granger cointegration test on the downsampled concurrent log price series
+    coint_score, p_value, critical_values = coint(np.log(coint_df['Close']), np.log(coint_df['Feature_Price']))
     
     print(f"Engle-Granger T-Statistic: {coint_score:.4f}")
     print(f"MacKinnon P-Value: {p_value:.6f}")
@@ -686,10 +686,10 @@ if args.backtest:
 
     for i in range(1, n):
         # Calculate PnL accurately mapping to Price-Beta Cointegration
-        target_diff = targets[i] - targets[i-1]
-        feature_diff = features[i] - features[i-1]
-        total_capital = targets[i-1] + abs(betas[i]) * features[i-1]
-        spread_return = (target_diff - betas[i] * feature_diff) / total_capital if total_capital > 0 else 0.0
+        ret_target = (targets[i] - targets[i-1]) / targets[i-1] if targets[i-1] > 0 else 0.0
+        ret_feature = (features[i] - features[i-1]) / features[i-1] if features[i-1] > 0 else 0.0
+        
+        spread_return = (ret_target - betas[i] * ret_feature) / (1.0 + abs(betas[i])) if (1.0 + abs(betas[i])) > 0 else 0.0
 
         prev_pos = pos
 

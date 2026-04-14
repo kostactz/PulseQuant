@@ -42,61 +42,54 @@ class EventBus:
 # ==========================================
 # 2. MATH UTILITIES & EWMA BIVARIATE BUFFER
 # ==========================================
-class EWMABivariate:
+class KalmanFilterBivariate:
     """
-    O(1) Exponentially Weighted Moving Average (EWMA) for covariance, variance, and means.
-    Prevents drop-off shocks typical in SMA RingBuffers.
+    O(1) Recursive Kalman Filter for dynamic hedge ratio (beta) and intercept (alpha).
+    Adapts faster to regime shifts than EWMA/Rolling OLS and prevents lagging drop-offs.
     """
-    def __init__(self, window_size: float):
-        self.alpha = 2.0 / (window_size + 1.0)
+    def __init__(self, delta=1e-5, r_var=1e-3):
+        self.delta = delta
+        self.r_var = r_var
+        self.state = [0.0, 0.0] # [alpha, beta]
+        self.P = [[1.0, 0.0], [0.0, 1.0]] # state covariance matrix
         self.initialized = False
-        
-        self.mean_x = 0.0
-        self.mean_y = 0.0
-        self.var_x = 0.0
-        self.var_y = 0.0
-        self.cov_xy = 0.0
         self.count = 0
 
     def append(self, x: float, y: float):
         if not self.initialized:
-            self.mean_x = x
-            self.mean_y = y
-            self.var_x = 0.0
-            self.var_y = 0.0
-            self.cov_xy = 0.0
+            self.state = [y, 0.0]
             self.initialized = True
             self.count = 1
             return
-
         self.count += 1
-        
-        diff_x = x - self.mean_x
-        diff_y = y - self.mean_y
-        
-        self.mean_x += self.alpha * diff_x
-        self.mean_y += self.alpha * diff_y
-        
-        # Update variance and covariance using new means
-        new_diff_x = x - self.mean_x
-        new_diff_y = y - self.mean_y
-        
-        self.var_x = (1.0 - self.alpha) * (self.var_x + self.alpha * diff_x * diff_x)
-        self.var_y = (1.0 - self.alpha) * (self.var_y + self.alpha * diff_y * diff_y)
-        self.cov_xy = (1.0 - self.alpha) * (self.cov_xy + self.alpha * diff_x * diff_y)
+        self.P[0][0] += self.delta
+        self.P[1][1] += self.delta
+        h0 = 1.0
+        h1 = x
+        y_pred = self.state[0] * h0 + self.state[1] * h1
+        e = y - y_pred
+        S = (h0 * (self.P[0][0]*h0 + self.P[0][1]*h1) + 
+             h1 * (self.P[1][0]*h0 + self.P[1][1]*h1)) + self.r_var
+        k0 = (self.P[0][0]*h0 + self.P[0][1]*h1) / S
+        k1 = (self.P[1][0]*h0 + self.P[1][1]*h1) / S
+        self.state[0] += k0 * e
+        self.state[1] += k1 * e
+        p00 = self.P[0][0] - k0 * (h0*self.P[0][0] + h1*self.P[1][0])
+        p01 = self.P[0][1] - k0 * (h0*self.P[0][1] + h1*self.P[1][1])
+        p10 = self.P[1][0] - k1 * (h0*self.P[0][0] + h1*self.P[1][0])
+        p11 = self.P[1][1] - k1 * (h0*self.P[0][1] + h1*self.P[1][1])
+        self.P = [[p00, p01], [p10, p11]]
 
     def get_beta(self) -> float:
-        if self.var_x < 1e-12:
-            return 0.0
-        return self.cov_xy / self.var_x
+        return self.state[1]
+        
+    def get_alpha(self) -> float:
+        return self.state[0]
 
     def reset(self):
+        self.state = [0.0, 0.0]
+        self.P = [[1.0, 0.0], [0.0, 1.0]]
         self.initialized = False
-        self.mean_x = 0.0
-        self.mean_y = 0.0
-        self.var_x = 0.0
-        self.var_y = 0.0
-        self.cov_xy = 0.0
         self.count = 0
 
 
@@ -149,7 +142,7 @@ class StatArbModel:
         self.w_z = 300      # Shorter tactical window
         
         # Statistical trackers
-        self.bivariate = EWMABivariate(self.w_beta)
+        self.bivariate = KalmanFilterBivariate(delta=1e-5, r_var=1e-3)
         self.spread_stats = EWMASingle(self.w_z)
         
         # ZOH State
@@ -386,12 +379,9 @@ class BackgroundAnalyticsWorker:
             half_life_periods = get_half_life(spread_series, '1m')
             hurst = get_hurst_exponent_dynamic(spread, len(spread))
             
-            # Convert 1m periods to 1s ticks for the ExecutionManager timeout math
-            half_life_ticks = half_life_periods * 60.0 if not np.isinf(half_life_periods) else np.inf
-                
             # Toxicity Gating
             is_coint = p_value < 0.05
-            is_hl_valid = half_life_ticks < self.max_half_life
+            is_hl_valid = half_life_periods * 60.0 < self.max_half_life
             
             is_toxic = not (is_coint and is_hl_valid and (hurst < 0.5))
             
@@ -399,7 +389,7 @@ class BackgroundAnalyticsWorker:
             self.bus.publish('REGIME_CHANGE', {
                 'toxic': is_toxic,
                 'adf_pvalue': float(p_value),
-                'half_life': float(half_life_ticks),
+                'half_life': float(half_life_periods),
                 'hurst': float(hurst)
             })
             
@@ -558,10 +548,11 @@ class ExecutionManager:
             # Restore/scale up slightly if safe, capped at 0.5
             self.base_size = min(0.5, self.base_size * 1.1)
             
-        hl = payload.get('half_life', 50.0)
+        hl_mins = payload.get('half_life', 50.0)
+        hl_ticks = hl_mins * 60.0
         # Faster mean reversion (lower half_life) -> tighter timeout
-        # e.g., if hl=10 ticks, timeout=2000ms. If hl=100, timeout=10000ms
-        self.maker_timeout_ms = max(1000, min(15000, int(hl * 200)))
+        # e.g., if hl_ticks=10 ticks, timeout=2000ms. If hl_ticks=100, timeout=10000ms
+        self.maker_timeout_ms = max(1000, min(15000, int(hl_ticks * 200)))
         
         vol = payload.get('volatility', 0.001)
         # Higher volatility -> higher slippage tolerance to ensure fills

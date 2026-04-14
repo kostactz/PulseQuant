@@ -35,7 +35,7 @@ def get_hurst_exponent_dynamic(ts, rolling_window):
 
 def get_half_life(ts, interval_str):
     try:
-        ts_1m = ts.resample('1T').last().dropna()
+        ts_1m = ts.resample('1min').last().dropna()
         if len(ts_1m) < 10:
             ts_1m = ts
     except Exception:
@@ -50,22 +50,63 @@ def get_half_life(ts, interval_str):
     hl_periods = -np.log(2) / lam if lam < 0 else np.inf
     original_sec = parse_interval_seconds(interval_str)
     resampled_sec = 60
-    if isinstance(ts_1m.index.freq, pd.offsets.Minute) or (len(ts_1m) != len(ts)):
+    has_minute_freq = hasattr(ts_1m.index, 'freq') and isinstance(getattr(ts_1m.index, 'freq', None), pd.offsets.Minute)
+    if has_minute_freq or (len(ts_1m) != len(ts)):
         hl_periods = hl_periods * (resampled_sec / original_sec)
     return hl_periods
 
-def calculate_rolling_metrics(df_in, window_size):
+def calculate_rolling_metrics(df_in, window_size, delta=1e-5, r_var=1e-3):
     df_calc = df_in.copy()
-    df_calc['EWM_Cov'] = df_calc['Close'].ewm(span=window_size).cov(df_calc['Feature_Price'])
-    df_calc['EWM_Var'] = df_calc['Feature_Price'].ewm(span=window_size).var()
-    df_calc['EWM_Mean_Close'] = df_calc['Close'].ewm(span=window_size).mean()
-    df_calc['EWM_Mean_Feature'] = df_calc['Feature_Price'].ewm(span=window_size).mean()
+    if 'Log_Close' not in df_calc:
+        df_calc['Log_Close'] = np.log(df_calc['Close'])
+    if 'Log_Feature' not in df_calc:
+        df_calc['Log_Feature'] = np.log(df_calc['Feature_Price'])
     
-    df_calc['Rolling_Beta'] = df_calc['EWM_Cov'] / df_calc['EWM_Var']
-    df_calc['Rolling_Alpha'] = df_calc['EWM_Mean_Close'] - (df_calc['Rolling_Beta'] * df_calc['EWM_Mean_Feature'])
+    y = df_calc['Log_Close'].values
+    x = df_calc['Log_Feature'].values
+    n = len(y)
     
-    df_calc['Dynamic_Spread'] = (df_calc['Close'] - 
-                                 (df_calc['Rolling_Beta'].shift(1) * df_calc['Feature_Price']) - 
+    beta = np.zeros(n)
+    alpha = np.zeros(n)
+    
+    if n > 0:
+        state0 = y[0]
+        state1 = 0.0
+        p00 = 1.0; p01 = 0.0; p10 = 0.0; p11 = 1.0
+        
+        for i in range(n):
+            p00 += delta
+            p11 += delta
+            
+            xi = x[i]
+            yi = y[i]
+            
+            y_pred = state0 + state1 * xi
+            e = yi - y_pred
+            
+            S = (p00 + p01*xi) + xi*(p10 + p11*xi) + r_var
+            
+            k0 = (p00 + p01*xi) / S
+            k1 = (p10 + p11*xi) / S
+            
+            state0 += k0 * e
+            state1 += k1 * e
+            
+            new_p00 = p00 - k0 * (p00 + xi*p10)
+            new_p01 = p01 - k0 * (p01 + xi*p11)
+            new_p10 = p10 - k1 * (p00 + xi*p10)
+            new_p11 = p11 - k1 * (p01 + xi*p11)
+            
+            p00, p01, p10, p11 = new_p00, new_p01, new_p10, new_p11
+            
+            alpha[i] = state0
+            beta[i] = state1
+
+    df_calc['Rolling_Beta'] = beta
+    df_calc['Rolling_Alpha'] = alpha
+    
+    df_calc['Dynamic_Spread'] = (df_calc['Log_Close'] - 
+                                 (df_calc['Rolling_Beta'].shift(1) * df_calc['Log_Feature']) - 
                                  df_calc['Rolling_Alpha'].shift(1))
     
     df_calc['Spread_Mean'] = df_calc['Dynamic_Spread'].rolling(window=window_size).mean()
@@ -154,10 +195,10 @@ def optimize_parameters(df_in, half_life_periods, interval, args_rolling_window=
                 
                 spread_returns = np.zeros(len(test_calc))
                 for i in range(1, len(test_calc)):
-                    target_diff = targets[i] - targets[i-1]
-                    feature_diff = features[i] - features[i-1]
-                    total_capital = targets[i-1] + abs(betas[i]) * features[i-1]
-                    gross_spread_return = (target_diff - betas[i] * feature_diff) / total_capital if total_capital > 0 else 0.0
+                    ret_target = (targets[i] - targets[i-1]) / targets[i-1] if targets[i-1] > 0 else 0.0
+                    ret_feature = (features[i] - features[i-1]) / features[i-1] if features[i-1] > 0 else 0.0
+                    
+                    gross_spread_return = (ret_target - betas[i] * ret_feature) / (1.0 + abs(betas[i])) if (1.0 + abs(betas[i])) > 0 else 0.0
                     
                     prev_pos = pos
 
@@ -179,7 +220,7 @@ def optimize_parameters(df_in, half_life_periods, interval, args_rolling_window=
                 all_mdds.append(np.max(drawdown))
                 
                 try:
-                    pval = coint(test_calc['Close'], test_calc['Feature_Price'])[1]
+                    pval = coint(np.log(test_calc['Close']), np.log(test_calc['Feature_Price']))[1]
                 except Exception:
                     pval = 1.0
                 all_pvals.append(pval)
