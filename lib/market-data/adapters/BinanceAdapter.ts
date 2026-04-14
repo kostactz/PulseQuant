@@ -81,14 +81,15 @@ export class BinanceAdapter implements MarketDataAdapter {
     if (this.publicWs) return;
 
     const streams = this.symbols.map(s => `${s}@bookTicker/${s}@depth@100ms/${s}@aggTrade`).join('/');
-    this.publicWs = new WebSocket(`${this.wsBaseUrl}/stream?streams=${streams}`);
+    const ws = new WebSocket(`${this.wsBaseUrl}/stream?streams=${streams}`);
+    this.publicWs = ws;
 
-    this.publicWs.onopen = () => {
+    ws.onopen = () => {
       logger.binance('Public WS Connected for streams: ' + this.symbols.join(', '));
       this.symbols.forEach(sym => this.fetchSnapshot(sym));
     };
 
-    this.publicWs.onmessage = (event) => {
+    ws.onmessage = (event) => {
       const raw = JSON.parse(event.data);
       const stream = raw.stream;
       const data = raw.data;
@@ -131,10 +132,12 @@ export class BinanceAdapter implements MarketDataAdapter {
       }
     };
 
-    this.publicWs.onclose = () => {
-      logger.binance('Public WS Disconnected');
-      this.publicWs = null;
-      this.handleReconnect();
+    ws.onclose = () => {
+      if (this.publicWs === ws) {
+        logger.binance('Public WS Disconnected');
+        this.publicWs = null;
+        this.handleReconnect();
+      }
     };
   }
 
@@ -179,9 +182,10 @@ export class BinanceAdapter implements MarketDataAdapter {
       if (this.listenKeyInterval) clearInterval(this.listenKeyInterval);
       this.listenKeyInterval = setInterval(() => this.keepAliveListenKey(), 30 * 60 * 1000);
 
-      this.userDataWs = new WebSocket(`${this.wsBaseUrl}/ws/${this.listenKey}`);
+      const ws = new WebSocket(`${this.wsBaseUrl}/ws/${this.listenKey}`);
+      this.userDataWs = ws;
 
-      this.userDataWs.onopen = async () => {
+      ws.onopen = async () => {
         logger.binance('User Data Stream Connected');
         if (this.syncStateCallback) {
           try {
@@ -218,7 +222,7 @@ export class BinanceAdapter implements MarketDataAdapter {
         }
       };
 
-      this.userDataWs.onmessage = (event) => {
+      ws.onmessage = (event) => {
         const data = JSON.parse(event.data);
         
         if (data.e === 'ORDER_TRADE_UPDATE') {
@@ -236,11 +240,13 @@ export class BinanceAdapter implements MarketDataAdapter {
         }
       };
 
-      this.userDataWs.onclose = () => {
-        logger.binance('User Data Stream Disconnected');
-        this.userDataWs = null;
-        if (this.listenKeyInterval) clearInterval(this.listenKeyInterval);
-        this.handleReconnect();
+      ws.onclose = () => {
+        if (this.userDataWs === ws) {
+          logger.binance('User Data Stream Disconnected');
+          this.userDataWs = null;
+          if (this.listenKeyInterval) clearInterval(this.listenKeyInterval);
+          this.handleReconnect();
+        }
       };
     } catch (err: any) {
       logger.error('User Data Stream connection failed:', err);
@@ -592,10 +598,14 @@ export class BinanceAdapter implements MarketDataAdapter {
     if (this.listenKeyInterval) clearInterval(this.listenKeyInterval);
     
     if (this.publicWs) {
+      this.publicWs.onclose = null;
+      this.publicWs.onmessage = null;
       this.publicWs.close();
       this.publicWs = null;
     }
     if (this.userDataWs) {
+      this.userDataWs.onclose = null;
+      this.userDataWs.onmessage = null;
       this.userDataWs.close();
       this.userDataWs = null;
     }
@@ -606,6 +616,8 @@ export class BinanceAdapter implements MarketDataAdapter {
     
     if (this.publicWs) {
       this.isIntentionalDisconnect = true;
+      this.publicWs.onclose = null;
+      this.publicWs.onmessage = null;
       this.publicWs.close();
       this.publicWs = null;
     }
@@ -650,7 +662,10 @@ export class BinanceAdapter implements MarketDataAdapter {
       // We would need to reconnect or send a sub message, but since Binance WS uses query string streams upon connect,
       // it's easier to drop and reconnect public.
       if (this.publicWs) {
+        this.publicWs.onclose = null;
+        this.publicWs.onmessage = null;
         this.publicWs.close(); // Will trigger reconnect
+        this.publicWs = null;
       }
     }
   }
@@ -660,7 +675,10 @@ export class BinanceAdapter implements MarketDataAdapter {
     const sym = symbol.toLowerCase();
     this.symbols = this.symbols.filter(s => s !== sym);
     if (this.publicWs) {
+      this.publicWs.onclose = null;
+      this.publicWs.onmessage = null;
       this.publicWs.close(); // Will trigger reconnect
+      this.publicWs = null;
     }
   }
 
