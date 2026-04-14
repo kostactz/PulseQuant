@@ -787,7 +787,7 @@ export default function Dashboard() {
                   </div>
 
                   <div className="h-[400px] w-full mt-6">
-                    <ResponsiveContainer width="100%" height="100%">
+                    <ResponsiveContainer width="100%" height="100%" minHeight={1} minWidth={1}>
                       <BarChart data={adhocResult.bins} margin={{ top: 20, right: 30, left: 20, bottom: 20 }}>
                         <XAxis 
                           dataKey="bin" 
