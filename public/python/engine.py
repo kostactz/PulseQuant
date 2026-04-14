@@ -269,13 +269,7 @@ class SignalGenerator:
         
         self.is_toxic = False
         
-        # Downsampled history buffers for low-freq math
-        self.history_target = []
-        self.history_feature = []
-        self.last_hist_ts = 0
-        
         self.bus.subscribe('MODEL_UPDATED', self._on_model_updated)
-        self.bus.subscribe('TIMER_1M', self._on_timer_1m)
         self.bus.subscribe('REGIME_CHANGE', self._on_regime_change)
         self.bus.subscribe('UPDATE_STRATEGY_PARAMS', self._on_update_params)
 
@@ -289,19 +283,6 @@ class SignalGenerator:
         if not payload['is_ready']:
             return
             
-        ts = payload['timestamp']
-        # Keep 1 data point per second roughly for history
-        if ts - self.last_hist_ts >= 1000:
-            import math
-            self.history_target.append(math.log(payload['target_price']))
-            self.history_feature.append(math.log(payload['feature_price']))
-            self.last_hist_ts = ts
-            
-            # Maintain max history buffer length (e.g. 5000)
-            if len(self.history_target) > 5000:
-                self.history_target.pop(0)
-                self.history_feature.pop(0)
-                
         import math
         target_ask = payload.get('target_ask', payload.get('target_price', 0.0))
         target_bid = payload.get('target_bid', payload.get('target_price', 0.0))
@@ -346,17 +327,6 @@ class SignalGenerator:
         if abs(z_score) <= self.exit_threshold:
             self.bus.publish('SIGNAL_GENERATED', {'direction': 'CLOSE_SPREAD', 'z_score': z_score})
 
-    def _on_timer_1m(self, payload: dict):
-        if len(self.history_target) < 50:
-            return
-            
-        # Dispatch asynchronously to avoid blocking the high-frequency execution
-        self.bus.publish_async('ANALYTICS_REQUEST', {
-            'target_history': list(self.history_target),
-            'feature_history': list(self.history_feature),
-            'timestamp': payload.get('timestamp')
-        })
-
     def _on_regime_change(self, payload: dict):
         self.is_toxic = payload.get('toxic', False)
         # We can also handle other parameter updates here in the future
@@ -378,54 +348,65 @@ class BackgroundAnalyticsWorker:
     def _run_analytics(self, payload: dict):
         try:
             import numpy as np
+            import pandas as pd
             import statsmodels.api as sm
             from statsmodels.tsa.stattools import coint
+            from public.python.analytics_core import get_hurst_exponent_dynamic, get_half_life
             
-            target_history = payload.get('target_history', [])
-            feature_history = payload.get('feature_history', [])
-            if len(target_history) < 50:
+            target_data = payload.get('targetData', [])
+            feature_data = payload.get('featureData', [])
+            if len(target_data) < 100 or len(feature_data) < 100:
                 return
                 
-            target_arr = np.array(target_history)
-            feature_arr = np.array(feature_history)
+            df_target = pd.DataFrame(target_data, columns=['timestamp', 'Target_Close'])
+            df_target['timestamp'] = pd.to_datetime(df_target['timestamp'], unit='ms')
+            df_target.set_index('timestamp', inplace=True)
+            
+            df_feature = pd.DataFrame(feature_data, columns=['timestamp', 'Feature_Close'])
+            df_feature['timestamp'] = pd.to_datetime(df_feature['timestamp'], unit='ms')
+            df_feature.set_index('timestamp', inplace=True)
+            
+            df_in = df_target.join(df_feature, how='inner').dropna()
+            
+            if len(df_in) < 100:
+                return
+                
+            target_arr = np.log(df_in['Target_Close'].values)
+            feature_arr = np.log(df_in['Feature_Close'].values)
             
             # 1. ADF Cointegration test
             score, p_value, _ = coint(target_arr, feature_arr)
             
-            # 2. OU Half-life estimate
+            # 2. OU Half-life estimate & Hurst
             X = sm.add_constant(feature_arr)
             model = sm.OLS(target_arr, X).fit()
             spread = model.resid
             
-            spread_lag = spread[:-1]
-            spread_diff = np.diff(spread)
+            spread_series = pd.Series(spread, index=df_in.index)
+            half_life_periods = get_half_life(spread_series, '1m')
+            hurst = get_hurst_exponent_dynamic(spread, len(spread))
             
-            X_hl = sm.add_constant(spread_lag)
-            hl_model = sm.OLS(spread_diff, X_hl).fit()
-            lam = hl_model.params[1] if len(hl_model.params) > 1 else 0.0
-            
-            if lam < 0:
-                half_life_periods = -np.log(2) / lam
-            else:
-                half_life_periods = np.inf
-                
             # Convert 1m periods to 1s ticks for the ExecutionManager timeout math
-            half_life_ticks = half_life_periods * 60.0
+            half_life_ticks = half_life_periods * 60.0 if not np.isinf(half_life_periods) else np.inf
                 
             # Toxicity Gating
             is_coint = p_value < 0.05
             is_hl_valid = half_life_ticks < self.max_half_life
             
-            is_toxic = not (is_coint and is_hl_valid)
+            is_toxic = not (is_coint and is_hl_valid and (hurst < 0.5))
             
             # Publish back to the main event bus
             self.bus.publish('REGIME_CHANGE', {
                 'toxic': is_toxic,
-                'p_value': p_value,
-                'half_life': half_life_ticks
+                'adf_pvalue': float(p_value),
+                'half_life': float(half_life_ticks),
+                'hurst': float(hurst)
             })
             
         except Exception as e:
+            import traceback
+            print(f"BackgroundAnalyticsWorker Error: {e}")
+            traceback.print_exc()
             self.bus.publish('REGIME_CHANGE', {'toxic': True, 'error': str(e)})
 
 
@@ -768,9 +749,9 @@ class TradingEngine:
         self.last_1s_timer = 0
         self.last_1m_timer = 0
         self.latest_regime = {
-            'hurst': 0.5,
-            'half_life': 0.0,
-            'adf_pvalue': 1.0,
+            'hurst': None,
+            'half_life': None,
+            'adf_pvalue': None,
             'volatility': 0.0,
             'toxic': False
         }
@@ -794,9 +775,9 @@ class TradingEngine:
         self.last_1s_timer = 0
         self.last_1m_timer = 0
         self.latest_regime = {
-            'hurst': 0.5,
-            'half_life': 0.0,
-            'adf_pvalue': 1.0,
+            'hurst': None,
+            'half_life': None,
+            'adf_pvalue': None,
             'volatility': 0.0,
             'toxic': False
         }
@@ -830,6 +811,9 @@ class TradingEngine:
                 
             elif ev_type == 'EXECUTION_REPORT':
                 self.bus.publish('ORDER_UPDATE', data)
+                
+            elif ev_type == 'REGIME_DATA':
+                self.bus.publish_async('ANALYTICS_REQUEST', data)
 
         if 'OUTBOUND_INTENT' in self.bus.subscribers:
             if on_intent in self.bus.subscribers['OUTBOUND_INTENT']:
@@ -875,9 +859,9 @@ class TradingEngine:
                 'target_ask': self.model.target_ask,
                 'feature_bid': self.model.feature_bid,
                 'feature_ask': self.model.feature_ask,
-                'hurst': self.latest_regime.get('hurst', 0.5),
-                'half_life': self.latest_regime.get('half_life', 0.0),
-                'adf_pvalue': self.latest_regime.get('adf_pvalue', 1.0)
+                'hurst': self.latest_regime.get('hurst'),
+                'half_life': self.latest_regime.get('half_life'),
+                'adf_pvalue': self.latest_regime.get('adf_pvalue')
             },
             'toxicity_flag': self.signal_generator.is_toxic,
             'execution_state': self.execution.state,

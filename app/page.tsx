@@ -131,6 +131,39 @@ export default function Dashboard() {
     }
   }, [targetAsset, featureAsset, runAdhocAnalysis]);
 
+  const fetchRegimeData = useCallback(async (target: string, feature: string) => {
+    if (!isReady) return;
+    try {
+      const fetchHistory = async (symbol: string) => {
+        const endTime = Date.now();
+        const startTime = endTime - (24 * 60 * 60 * 1000); // 24 hours of 1m data = 1440 points
+        const res = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=1m&startTime=${startTime}&endTime=${endTime}&limit=1500`);
+        const data = await res.json();
+        if (!data || !Array.isArray(data) || data.length === 0) return [];
+        return data.map((k: any) => [k[0], parseFloat(k[4])]);
+      };
+
+      const targetData = await fetchHistory(target);
+      const featureData = await fetchHistory(feature);
+      
+      if (targetData.length > 0 && featureData.length > 0) {
+        processBatch([{ type: 'REGIME_DATA', data: { targetData, featureData } }]);
+      }
+    } catch (e) {
+      console.error('Failed to fetch regime data', e);
+    }
+  }, [isReady, processBatch]);
+
+  useEffect(() => {
+    if (isReady && isUnlocked) {
+      fetchRegimeData(targetAsset, featureAsset);
+      const interval = setInterval(() => {
+        fetchRegimeData(targetAsset, featureAsset);
+      }, 15 * 60 * 1000); // Every 15 minutes
+      return () => clearInterval(interval);
+    }
+  }, [isReady, isUnlocked, targetAsset, featureAsset, fetchRegimeData]);
+
   useEffect(() => {
     if (isReady && !isFetchingHistory && analysisPair !== `${targetAsset}-${featureAsset}`) {
       setAnalysisPair(`${targetAsset}-${featureAsset}`);
@@ -484,25 +517,25 @@ export default function Dashboard() {
                   <div>
                     <div className="text-xs text-gray-400 uppercase tracking-wider font-semibold mb-1">Hedge Ratio (Beta)</div>
                     <div className="font-mono text-gray-700">
-                      {currentState.spread_metrics?.beta?.toFixed(4) || 'N/A'}
+                      {currentState.spread_metrics?.beta != null ? currentState.spread_metrics.beta.toFixed(4) : <span className="text-gray-400 flex items-center gap-1"><div className="w-3 h-3 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" /> Calc...</span>}
                     </div>
                   </div>
                   <div>
                     <div className="text-xs text-gray-400 uppercase tracking-wider font-semibold mb-1">Hurst Exponent</div>
                     <div className="font-mono text-gray-700">
-                      {currentState.spread_metrics?.hurst?.toFixed(4) || 'N/A'}
+                      {currentState.spread_metrics?.hurst != null ? currentState.spread_metrics.hurst.toFixed(4) : <span className="text-gray-400 flex items-center gap-1"><div className="w-3 h-3 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" /> Calc...</span>}
                     </div>
                   </div>
                   <div>
-                    <div className="text-xs text-gray-400 uppercase tracking-wider font-semibold mb-1">Half-life (ticks)</div>
+                    <div className="text-xs text-gray-400 uppercase tracking-wider font-semibold mb-1">Half-life (mins)</div>
                     <div className="font-mono text-gray-700">
-                      {currentState.spread_metrics?.half_life?.toFixed(1) || 'N/A'}
+                      {currentState.spread_metrics?.half_life != null ? currentState.spread_metrics.half_life.toFixed(1) : <span className="text-gray-400 flex items-center gap-1"><div className="w-3 h-3 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" /> Calc...</span>}
                     </div>
                   </div>
                   <div>
                     <div className="text-xs text-gray-400 uppercase tracking-wider font-semibold mb-1">ADF p-value</div>
                     <div className="font-mono text-gray-700">
-                      {currentState.spread_metrics?.adf_pvalue?.toFixed(4) || 'N/A'}
+                      {currentState.spread_metrics?.adf_pvalue != null ? currentState.spread_metrics.adf_pvalue.toFixed(4) : <span className="text-gray-400 flex items-center gap-1"><div className="w-3 h-3 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" /> Calc...</span>}
                     </div>
                   </div>
                   <div>
