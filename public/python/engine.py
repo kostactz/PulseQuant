@@ -251,7 +251,7 @@ class SignalGenerator:
     Listens to the model, applies strategy thresholds, and generates trade intents.
     Computes low-frequency ADF cointegration and Half-life estimators on 1M timers.
     """
-    def __init__(self, bus: EventBus, target: str, feature: str, portfolio: PortfolioManager):
+    def __init__(self, bus: EventBus, target: str, feature: str, portfolio: 'PortfolioManager'):
         self.bus = bus
         self.target = target
         self.feature = feature
@@ -539,7 +539,7 @@ class ExecutionManager:
     Manages the Asynchronous Legging State Machine (Maker-Taker).
     Ensures safe entry into dual-leg pairs.
     """
-    def __init__(self, bus: EventBus, target: str, feature: str, portfolio: PortfolioManager):
+    def __init__(self, bus: EventBus, target: str, feature: str, portfolio: 'PortfolioManager'):
         self.bus = bus
         self.target = target
         self.feature = feature

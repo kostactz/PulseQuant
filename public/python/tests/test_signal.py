@@ -1,10 +1,11 @@
 import pytest
-from public.python.engine import EventBus, SignalGenerator
+from public.python.engine import EventBus, SignalGenerator, PortfolioManager
 import numpy as np
 
 def test_signal_generator_basic():
     bus = EventBus()
-    sg = SignalGenerator(bus, target="BTC", feature="ETH")
+    portfolio = PortfolioManager(bus, "BTC", "ETH")
+    sg = SignalGenerator(bus, target="BTC", feature="ETH", portfolio=portfolio)
     
     signals = []
     regimes = []
@@ -43,7 +44,8 @@ def test_signal_generator_timers():
     bus = EventBus()
     from public.python.engine import BackgroundAnalyticsWorker
     bg = BackgroundAnalyticsWorker(bus)
-    sg = SignalGenerator(bus, target="BTC", feature="ETH")
+    portfolio = PortfolioManager(bus, "BTC", "ETH")
+    sg = SignalGenerator(bus, target="BTC", feature="ETH", portfolio=portfolio)
     
     regimes = []
     def on_regime(payload):
