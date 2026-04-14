@@ -1,5 +1,5 @@
 'use client';
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ReferenceLine, ResponsiveContainer } from 'recharts';
 import { usePythonWorker } from '@/hooks/usePythonWorker';
 import { useMarketData } from '@/hooks/useMarketData';
@@ -43,10 +43,10 @@ export default function Dashboard() {
       executeModeSwitch(newMode);
     }
   };
-  const { isReady, metrics, uiDelta, getUIDelta, processBatch, clearData, clearCache, executeTrade, setAutoTrade, updateStrategy, setTradeSize, configureStrategy, runAdhocAnalysis, adhocResult } = usePythonWorker((intent) => {
+  const { isReady, metrics, uiDelta, getUIDelta, processBatch, clearData, clearCache, executeTrade, setAutoTrade, updateStrategy, setTradeSize, configureStrategy, runAdhocAnalysis, adhocResult, setStrategyParams } = usePythonWorker((intent) => {
     if (handleIntentRef.current) handleIntentRef.current(intent);
   });
-  const { latestDepth, latestTick, getAndClearBuffer, clearBuffer, isPlaying, setIsPlaying, isRecording, toggleRecording, executeIntent, setSymbols } = useMarketData(
+  const { orderBooks, latestTicks, getAndClearBuffer, clearBuffer, isPlaying, setIsPlaying, isRecording, toggleRecording, executeIntent, setSymbols } = useMarketData(
     isUnlocked, 
     tradingMode,
     (tick) => {
@@ -98,10 +98,11 @@ export default function Dashboard() {
   const [targetAsset, setTargetAsset] = useState('BTCUSDT');
   const [featureAsset, setFeatureAsset] = useState('ETHUSDT');
   const [isFetchingHistory, setIsFetchingHistory] = useState(false);
+  const [analysisPair, setAnalysisPair] = useState<string | null>(null);
 
   const AVAILABLE_ASSETS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'ADAUSDT', 'XRPUSDT', 'BNBUSDT'];
 
-  const handleRunAnalysis = async () => {
+  const handleRunAnalysis = useCallback(async () => {
     setIsFetchingHistory(true);
     try {
       const fetchHistory = async (symbol: string) => {
@@ -128,7 +129,20 @@ export default function Dashboard() {
     } finally {
       setIsFetchingHistory(false);
     }
-  };
+  }, [targetAsset, featureAsset, runAdhocAnalysis]);
+
+  useEffect(() => {
+    if (isReady && !isFetchingHistory && analysisPair !== `${targetAsset}-${featureAsset}`) {
+      setAnalysisPair(`${targetAsset}-${featureAsset}`);
+      handleRunAnalysis();
+    }
+  }, [isReady, targetAsset, featureAsset, isFetchingHistory, analysisPair, handleRunAnalysis]);
+
+  useEffect(() => {
+    if (adhocResult && !adhocResult.error && adhocResult.recommended_sigma) {
+      setStrategyParams({ sigma_threshold: adhocResult.recommended_sigma });
+    }
+  }, [adhocResult, setStrategyParams]);
 
   const handlePairChange = async (newTarget: string, newFeature: string) => {
     if (newTarget === newFeature) return;
@@ -201,6 +215,12 @@ export default function Dashboard() {
 
   // State data is now from uiDelta directly or fallback to metrics for backwards compatibility
   const currentState = uiDelta || metrics;
+
+  const targetDepth = orderBooks[targetAsset] || { bids: [], asks: [] };
+  const targetTick = latestTicks[targetAsset];
+  
+  const featureDepth = orderBooks[featureAsset] || { bids: [], asks: [] };
+  const featureTick = latestTicks[featureAsset];
 
   return (
     <main className="min-h-screen bg-gray-50 text-gray-900 p-6 font-sans">
@@ -426,8 +446,16 @@ export default function Dashboard() {
                        'Binance Mainnet Engine'}
                     </h2>
                     <div className="flex gap-4 items-center">
-                      <div className="text-2xl font-bold text-gray-900 tracking-tight">
-                        ${currentState.portfolio_value?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || '100,000.00'}
+                      <div className="flex flex-col">
+                        <div className="text-2xl font-bold text-gray-900 tracking-tight">
+                          ${currentState.portfolio_value?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || '100,000.00'}
+                        </div>
+                        {currentState.unrealized_pnl && Object.values(currentState.unrealized_pnl as Record<string, number>).reduce((a: number, b: number) => a + b, 0) !== 0 && (
+                          <div className={`text-xs font-semibold font-mono ${Object.values(currentState.unrealized_pnl as Record<string, number>).reduce((a: number, b: number) => a + b, 0) > 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                            {Object.values(currentState.unrealized_pnl as Record<string, number>).reduce((a: number, b: number) => a + b, 0) > 0 ? '+' : ''}
+                            {Object.values(currentState.unrealized_pnl as Record<string, number>).reduce((a: number, b: number) => a + b, 0).toFixed(2)} uPnL
+                          </div>
+                        )}
                       </div>
                       <div className="flex gap-2 items-center text-sm ml-4 border-l border-gray-300 pl-4">
                          <select className="bg-gray-50 border border-gray-200 rounded p-1" value={targetAsset} onChange={(e) => handlePairChange(e.target.value, featureAsset)}>
@@ -517,32 +545,67 @@ export default function Dashboard() {
                 </div>
               </div>
 
-              {/* Strategy Settings */}
-              <div className="mt-4 pt-4 border-t border-gray-200 flex flex-wrap items-center justify-between gap-4">
-                <div className="flex items-center gap-3">
-                  <span className="text-sm font-medium text-gray-500">Positions:</span>
-                  <div className="flex gap-4">
-                    {currentState.positions && Object.entries(currentState.positions).map(([sym, pos]) => (
-                      <div key={sym} className="flex gap-2 items-center bg-gray-50 px-2 py-1 rounded-md border border-gray-200">
-                        <span className="text-xs font-semibold text-gray-500">{sym}</span>
-                        <span className={`font-mono text-sm ${(pos as number) > 0 ? 'text-emerald-600' : (pos as number) < 0 ? 'text-red-600' : 'text-gray-700'}`}>
-                          {(pos as number) > 0 ? '+' : ''}{(pos as number).toFixed(4)}
-                        </span>
-                      </div>
-                    ))}
+              {/* Strategy Settings & Positions */}
+              <div className="mt-4 pt-4 border-t border-gray-200 flex flex-wrap items-start justify-between gap-4">
+                <div className="flex flex-col gap-2 flex-1">
+                  <span className="text-sm font-medium text-gray-500">Active Positions:</span>
+                  <div className="flex flex-wrap gap-3">
+                    {currentState.positions && Object.entries(currentState.positions).map(([sym, pos]) => {
+                      if (Math.abs(pos as number) < 1e-8) return null;
+                      const avgEntry = currentState.avg_entry_prices?.[sym] || 0;
+                      const upnl = currentState.unrealized_pnl?.[sym] || 0;
+                      return (
+                        <div key={sym} className="flex flex-col bg-gray-50 px-3 py-2 rounded-lg border border-gray-200 shadow-sm min-w-[140px]">
+                          <div className="flex justify-between items-center mb-1">
+                            <span className="text-xs font-bold text-gray-700">{sym}</span>
+                            <span className={`font-mono text-sm font-semibold ${(pos as number) > 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                              {(pos as number) > 0 ? 'LONG' : 'SHORT'} {(pos as number).toFixed(4)}
+                            </span>
+                          </div>
+                          <div className="flex justify-between items-center text-xs">
+                            <span className="text-gray-500">Entry:</span>
+                            <span className="font-mono text-gray-800">{avgEntry.toFixed(2)}</span>
+                          </div>
+                          <div className="flex justify-between items-center text-xs mt-0.5">
+                            <span className="text-gray-500">uPnL:</span>
+                            <span className={`font-mono font-medium ${upnl > 0 ? 'text-emerald-600' : upnl < 0 ? 'text-red-600' : 'text-gray-500'}`}>
+                              {upnl > 0 ? '+' : ''}{upnl.toFixed(2)}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {(!currentState.positions || Object.values(currentState.positions).every(p => Math.abs(p as number) < 1e-8)) && (
+                      <span className="text-sm text-gray-400 italic py-2">No open positions</span>
+                    )}
                   </div>
                 </div>
-                <div className="flex items-center gap-3">
-                  <span className="text-sm font-medium text-gray-500">Signal Speed:</span>
-                  <select 
-                    className="bg-gray-50 border border-gray-200 text-sm rounded-lg px-3 py-1.5 text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                    value={strategySpeed}
-                    onChange={(e) => handleStrategyChange(strategyStyle, e.target.value)}
-                  >
-                    <option value="slow">Slow (Lagging)</option>
-                    <option value="normal">Normal</option>
-                    <option value="fast">Fast (Responsive)</option>
-                  </select>
+                
+                <div className="flex flex-col items-end gap-3 min-w-[200px]">
+                  <div className="flex items-center gap-3">
+                    <span className="text-sm font-medium text-gray-500">Trading Style:</span>
+                    <select 
+                      className="bg-gray-50 border border-gray-200 text-sm rounded-lg px-3 py-1.5 text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      value={strategyStyle}
+                      onChange={(e) => handleStrategyChange(e.target.value, strategySpeed)}
+                    >
+                      <option value="conservative">Conservative</option>
+                      <option value="moderate">Moderate</option>
+                      <option value="aggressive">Aggressive</option>
+                    </select>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className="text-sm font-medium text-gray-500">Signal Speed:</span>
+                    <select 
+                      className="bg-gray-50 border border-gray-200 text-sm rounded-lg px-3 py-1.5 text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      value={strategySpeed}
+                      onChange={(e) => handleStrategyChange(strategyStyle, e.target.value)}
+                    >
+                      <option value="slow">Slow (Lagging)</option>
+                      <option value="normal">Normal</option>
+                      <option value="fast">Fast (Responsive)</option>
+                    </select>
+                  </div>
                 </div>
               </div>
             </div>
@@ -643,15 +706,29 @@ export default function Dashboard() {
 
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
               <div className="bg-white border border-gray-200 shadow-sm p-5 rounded-xl h-[1040px] lg:col-span-1">
-                <h2 className="text-sm font-medium text-gray-500 mb-4">Order Book Depth</h2>
+                <h2 className="text-sm font-medium text-gray-500 mb-4">{targetAsset} Order Book</h2>
                 <div className="w-full h-[calc(100%-2rem)]">
                   <OrderBookDepth 
-                    bids={latestDepth.bids} 
-                    asks={latestDepth.asks} 
-                    currentBid={latestTick?.bid}
-                    currentAsk={latestTick?.ask}
+                    bids={targetDepth.bids} 
+                    asks={targetDepth.asks} 
+                    currentBid={targetTick?.bid}
+                    currentAsk={targetTick?.ask}
+                    activeMakerPrice={currentState?.pending_orders?.find((o: any) => o.symbol === targetAsset)?.price}
+                  />
+                </div>
+              </div>
+
+              <div className="bg-white border border-gray-200 shadow-sm p-5 rounded-xl h-[1040px] lg:col-span-1">
+                <h2 className="text-sm font-medium text-gray-500 mb-4">{featureAsset} Order Book</h2>
+                <div className="w-full h-[calc(100%-2rem)]">
+                  <OrderBookDepth 
+                    bids={featureDepth.bids} 
+                    asks={featureDepth.asks} 
+                    currentBid={featureTick?.bid}
+                    currentAsk={featureTick?.ask}
+                    activeMakerPrice={currentState?.pending_orders?.find((o: any) => o.symbol === featureAsset)?.price}
                   />
                 </div>
               </div>

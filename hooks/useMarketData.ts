@@ -8,8 +8,8 @@ import { OrderManager, Intent } from '@/lib/order/OrderManager';
 export type TradingMode = 'PAPER' | 'TESTNET' | 'MAINNET';
 
 export function useMarketData(connectEnabled: boolean = true, tradingMode: TradingMode = 'PAPER', onTickImmediate?: (tick: NormalizedTick) => void, onExecutionReportImmediate?: (report: any) => void, onSyncStateImmediate?: (state: any) => void) {
-  const [latestDepth, setLatestDepth] = useState<{bids: [number, number][], asks: [number, number][]}>({ bids: [], asks: [] });
-  const [latestTick, setLatestTick] = useState<NormalizedTick | null>(null);
+  const [orderBooks, setOrderBooks] = useState<Record<string, { bids: [number, number][], asks: [number, number][] }>>({});
+  const [latestTicks, setLatestTicks] = useState<Record<string, NormalizedTick>>({});
   const buffer = useRef<NormalizedTick[]>([]);
   const [isPlaying, setIsPlaying] = useState(true);
   
@@ -24,7 +24,8 @@ export function useMarketData(connectEnabled: boolean = true, tradingMode: Tradi
   
   // 1. Connection Setup and State Management
   // Manage the WebSocket connection using useRef to ensure it persists across re-renders
-  const latestTickRef = useRef<NormalizedTick | null>(null);
+  const latestTickRefs = useRef<Record<string, NormalizedTick>>({});
+  const orderBookRefs = useRef<Record<string, { bids: [number, number][], asks: [number, number][] }>>({});
   
   useEffect(() => { 
     onTickImmediateRef.current = onTickImmediate; 
@@ -73,7 +74,9 @@ export function useMarketData(connectEnabled: boolean = true, tradingMode: Tradi
 
       adapterRef.current.onTick((tick) => {
         buffer.current.push(tick);
-        latestTickRef.current = tick;
+        const sym = tick.symbol || 'UNKNOWN';
+        latestTickRefs.current[sym] = tick;
+        orderBookRefs.current[sym] = tick.depth;
         
         if (onTickImmediateRef.current) {
           onTickImmediateRef.current(tick);
@@ -86,8 +89,8 @@ export function useMarketData(connectEnabled: boolean = true, tradingMode: Tradi
         // Use strict time-based throttling for UI rendering (e.g., max 10 FPS = 100ms)
         const now = Date.now();
         if (now - lastRenderTimeRef.current >= 100) {
-          setLatestDepth(tick.depth);
-          setLatestTick(tick);
+          setOrderBooks({ ...orderBookRefs.current });
+          setLatestTicks({ ...latestTickRefs.current });
           lastRenderTimeRef.current = now;
         }
       });
@@ -118,7 +121,7 @@ export function useMarketData(connectEnabled: boolean = true, tradingMode: Tradi
                     clientOrderId: intent.clientOrderId,
                     status: 'FILLED',
                     lastFilledQuantity: intent.quantity,
-                    lastFilledPrice: intent.price || (intent.side === 'BUY' ? latestTickRef.current?.ask : latestTickRef.current?.bid),
+                    lastFilledPrice: intent.price || (intent.side === 'BUY' ? latestTickRefs.current[intent.symbol]?.ask : latestTickRefs.current[intent.symbol]?.bid),
                     transactionTime: Date.now(),
                   });
                 }, 500);
@@ -293,8 +296,8 @@ export function useMarketData(connectEnabled: boolean = true, tradingMode: Tradi
   }, []);
 
   return {
-    latestDepth,
-    latestTick,
+    orderBooks,
+    latestTicks,
     getAndClearBuffer,
     clearBuffer,
     isPlaying,

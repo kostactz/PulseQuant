@@ -121,11 +121,28 @@ async function initPyodide() {
       importScripts('https://cdn.jsdelivr.net/pyodide/v0.25.0/full/pyodide.js');
 
       pyodide = await loadPyodide({ indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.25.0/full/' });
-      await pyodide.loadPackage(['pandas', 'numpy', 'scipy']);
+      await pyodide.loadPackage(['pandas', 'numpy', 'scipy', 'statsmodels']);
 
       const response = await fetch('/python/engine.py?t=' + Date.now());
       if (!response.ok) throw new Error('Failed to fetch engine.py: ' + response.status);
       const pythonCode = await response.text();
+
+      const analyticsRes = await fetch('/python/analytics_core.py?t=' + Date.now());
+      if (analyticsRes.ok) {
+        const analyticsCode = await analyticsRes.text();
+        pyodide.globals.set("__analytics_code__", analyticsCode);
+        pyodide.runPython(`
+import os
+import sys
+os.makedirs("/public/python", exist_ok=True)
+with open("/public/__init__.py", "w") as f: f.write("")
+with open("/public/python/__init__.py", "w") as f: f.write("")
+with open("/public/python/analytics_core.py", "w") as f: f.write(__analytics_code__)
+if "/" not in sys.path:
+    sys.path.insert(0, "/")
+        `);
+        pyodide.runPython("del __analytics_code__");
+      }
 
       await pyodide.runPythonAsync(pythonCode);
 
@@ -337,6 +354,18 @@ configure_strategy("${safeTarget}", "${safeFeature}")
         if (adhocFn && typeof adhocFn.destroy === 'function') adhocFn.destroy();
       } catch (err) {
         console.error('[Worker] Adhoc error:', err);
+        postMessage({ type: 'ERROR', error: String(err) });
+      }
+    } else if (e.data.type === 'SET_STRATEGY_PARAMS') {
+      try {
+        const setParamsFn = pyodide.globals.get('set_strategy_params');
+        let pyPayload = pyodide.toPy(e.data.payload);
+        setParamsFn(pyPayload);
+        postMessage({ type: 'STRATEGY_PARAMS_UPDATED' });
+        if (pyPayload && typeof pyPayload.destroy === 'function') pyPayload.destroy();
+        if (setParamsFn && typeof setParamsFn.destroy === 'function') setParamsFn.destroy();
+      } catch (err) {
+        console.error('[Worker] Set strategy params error:', err);
         postMessage({ type: 'ERROR', error: String(err) });
       }
     } else if (e.data.type === 'UPDATE_STRATEGY') {

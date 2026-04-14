@@ -5,9 +5,10 @@ interface OrderBookDepthProps {
   asks: [number, number][];
   currentBid?: number;
   currentAsk?: number;
+  activeMakerPrice?: number;
 }
 
-export const OrderBookDepth: React.FC<OrderBookDepthProps> = ({ bids, asks, currentBid, currentAsk }) => {
+export const OrderBookDepth: React.FC<OrderBookDepthProps> = ({ bids, asks, currentBid, currentAsk, activeMakerPrice }) => {
   if (!bids || !asks || bids.length === 0 || asks.length === 0) {
     return (
       <div className="flex items-center justify-center h-full text-gray-500 text-sm">
@@ -36,14 +37,15 @@ export const OrderBookDepth: React.FC<OrderBookDepthProps> = ({ bids, asks, curr
           {asks.map((ask, i) => {
             const [price, vol] = ask;
             const width = Math.max(1, (vol / maxVol) * 100);
+            const isActive = activeMakerPrice === price;
             return (
-              <div key={`ask-${i}`} className="relative grid grid-cols-3 items-center py-0.5 group text-xs">
+              <div key={`ask-${i}`} className={`relative grid grid-cols-3 items-center py-0.5 group text-xs ${isActive ? 'ring-2 ring-blue-500 animate-pulse z-30' : ''}`}>
                 <div 
                   className="absolute right-0 top-0 bottom-0 bg-red-100 transition-all duration-100" 
                   style={{ width: `${width}%` }} 
                 />
                 <div className="text-left text-gray-600 z-10 pl-2">-</div>
-                <div className="text-center text-red-600 z-10 font-medium">{price.toFixed(2)}</div>
+                <div className={`text-center z-10 font-medium ${isActive ? 'text-blue-600' : 'text-red-600'}`}>{price.toFixed(2)}</div>
                 <div className="text-right text-gray-600 z-10 pr-2">{Math.round(vol)}</div>
               </div>
             );
@@ -62,14 +64,15 @@ export const OrderBookDepth: React.FC<OrderBookDepthProps> = ({ bids, asks, curr
           {bids.map((bid, i) => {
             const [price, vol] = bid;
             const width = Math.max(1, (vol / maxVol) * 100);
+            const isActive = activeMakerPrice === price;
             return (
-              <div key={`bid-${i}`} className="relative grid grid-cols-3 items-center py-0.5 group text-xs">
+              <div key={`bid-${i}`} className={`relative grid grid-cols-3 items-center py-0.5 group text-xs ${isActive ? 'ring-2 ring-blue-500 animate-pulse z-30' : ''}`}>
                 <div 
                   className="absolute left-0 top-0 bottom-0 bg-emerald-100 transition-all duration-100" 
                   style={{ width: `${width}%` }} 
                 />
                 <div className="text-left text-gray-600 z-10 pl-2">{Math.round(vol)}</div>
-                <div className="text-center text-emerald-600 z-10 font-medium">{price.toFixed(2)}</div>
+                <div className={`text-center z-10 font-medium ${isActive ? 'text-blue-600' : 'text-emerald-600'}`}>{price.toFixed(2)}</div>
                 <div className="text-right text-gray-600 z-10 pr-2">-</div>
               </div>
             );

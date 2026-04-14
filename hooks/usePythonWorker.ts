@@ -219,5 +219,11 @@ export function usePythonWorker(onIntent?: (intent: any) => void) {
     }
   }, [isReady]);
 
-  return { isReady, metrics, uiDelta, getUIDelta, processBatch, clearData, clearCache, executeTrade, setAutoTrade, updateStrategy, setTradeSize, configureStrategy, runAdhocAnalysis, adhocResult };
+  const setStrategyParams = useCallback((params: any) => {
+    if (isReady && workerRef.current) {
+      workerRef.current.postMessage({ type: 'SET_STRATEGY_PARAMS', payload: params });
+    }
+  }, [isReady]);
+
+  return { isReady, metrics, uiDelta, getUIDelta, processBatch, clearData, clearCache, executeTrade, setAutoTrade, updateStrategy, setTradeSize, configureStrategy, runAdhocAnalysis, adhocResult, setStrategyParams };
 }

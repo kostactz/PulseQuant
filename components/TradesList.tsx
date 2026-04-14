@@ -141,8 +141,8 @@ export const TradesList: React.FC<TradesListProps> = ({ trades, cancellations = 
                     {isBuy ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownRight className="w-3 h-3" />}
                     {isBuy ? 'BUY' : 'SELL'}
                   </div>
-                  <div className="text-right font-mono text-gray-700">${trade.price.toFixed(2)}</div>
-                  <div className="text-right font-mono text-xs text-gray-600 leading-tight">{Number.isInteger(trade.qty) ? trade.qty : trade.qty.toFixed(4)}</div>
+                  <div className="text-right font-mono text-gray-700">${trade.price?.toFixed(2) ?? '-'}</div>
+                  <div className="text-right font-mono text-xs text-gray-600 leading-tight">{trade.qty !== undefined ? (Number.isInteger(trade.qty) ? trade.qty : trade.qty.toFixed(4)) : '-'}</div>
                   <div className="text-right font-mono text-xs text-gray-600 truncate" title={trade.reason}>{trade.reason || '-'}</div>
                 </div>
 
@@ -183,8 +183,8 @@ export const TradesList: React.FC<TradesListProps> = ({ trades, cancellations = 
                     {isBuy ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownRight className="w-3 h-3" />}
                     {isBuy ? 'BUY' : 'SELL'}
                   </div>
-                  <div className="text-right font-mono text-gray-700">${order.price.toFixed(2)}</div>
-                  <div className="text-right font-mono text-xs text-gray-600 leading-tight">{Number.isInteger(order.qty) ? order.qty : order.qty.toFixed(4)}</div>
+                  <div className="text-right font-mono text-gray-700">${order.price?.toFixed(2) ?? '-'}</div>
+                  <div className="text-right font-mono text-xs text-gray-600 leading-tight">{order.qty !== undefined ? (Number.isInteger(order.qty) ? order.qty : order.qty.toFixed(4)) : '-'}</div>
                   <div className="text-right font-mono text-xs text-gray-600 truncate" title={order.reason}>{order.reason || '-'}</div>
                 </div>
 
@@ -230,8 +230,8 @@ export const TradesList: React.FC<TradesListProps> = ({ trades, cancellations = 
                   {isBuy ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownRight className="w-3 h-3" />}
                   {isBuy ? 'BUY' : 'SELL'}
                 </div>
-                <div className="text-right font-mono text-gray-700">${cancel.price.toFixed(2)}</div>
-                <div className="text-right font-mono text-xs text-gray-600 leading-tight">{Number.isInteger(cancel.qty) ? cancel.qty : cancel.qty.toFixed(4)}</div>
+                <div className="text-right font-mono text-gray-700">${cancel.price?.toFixed(2) ?? '-'}</div>
+                <div className="text-right font-mono text-xs text-gray-600 leading-tight">{cancel.qty !== undefined ? (Number.isInteger(cancel.qty) ? cancel.qty : cancel.qty.toFixed(4)) : '-'}</div>
                 <div className="text-right text-xs text-gray-700">{gates || 'TOX'} {restingSec.toFixed(1)}s | z-score {zscore.toFixed(2)} spread {spread.toFixed(2)}</div>
               </div>
 

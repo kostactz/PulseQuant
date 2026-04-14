@@ -251,15 +251,17 @@ class SignalGenerator:
     Listens to the model, applies strategy thresholds, and generates trade intents.
     Computes low-frequency ADF cointegration and Half-life estimators on 1M timers.
     """
-    def __init__(self, bus: EventBus, target: str, feature: str):
+    def __init__(self, bus: EventBus, target: str, feature: str, portfolio: PortfolioManager):
         self.bus = bus
         self.target = target
         self.feature = feature
+        self.portfolio = portfolio
         
         # Parameters
         self.entry_threshold = 2.0
         self.exit_threshold = 0.0
         self.max_half_life = 7200  # in periods
+        self.max_net_delta = 50000.0  # max unhedged exposure
         
         self.maker_fee = 0.0002
         self.taker_fee = 0.0005
@@ -275,6 +277,13 @@ class SignalGenerator:
         self.bus.subscribe('MODEL_UPDATED', self._on_model_updated)
         self.bus.subscribe('TIMER_1M', self._on_timer_1m)
         self.bus.subscribe('REGIME_CHANGE', self._on_regime_change)
+        self.bus.subscribe('UPDATE_STRATEGY_PARAMS', self._on_update_params)
+
+    def _on_update_params(self, payload: dict):
+        if 'sigma_threshold' in payload:
+            self.entry_threshold = float(payload['sigma_threshold'])
+        if 'max_net_delta' in payload:
+            self.max_net_delta = float(payload['max_net_delta'])
         
     def _on_model_updated(self, payload: dict):
         if not payload['is_ready']:
@@ -322,11 +331,16 @@ class SignalGenerator:
         expected_edge_short = (abs(short_z_score) * spread_std) - (self.maker_fee + self.taker_fee)
         
         # Entry signals
+        current_net_delta = self.portfolio.get_net_delta(target_ask, feature_bid)
+        expected_target_notional = self.portfolio.cash * 0.1
+
         if not self.is_toxic:
             if long_z_score < -self.entry_threshold and expected_edge_long * 10000 > self.min_profit_bps:
-                self.bus.publish('SIGNAL_GENERATED', {'direction': 'LONG_SPREAD', 'z_score': long_z_score})
+                if abs(current_net_delta + expected_target_notional) < self.max_net_delta:
+                    self.bus.publish('SIGNAL_GENERATED', {'direction': 'LONG_SPREAD', 'z_score': long_z_score})
             elif short_z_score > self.entry_threshold and expected_edge_short * 10000 > self.min_profit_bps:
-                self.bus.publish('SIGNAL_GENERATED', {'direction': 'SHORT_SPREAD', 'z_score': short_z_score})
+                if abs(current_net_delta - expected_target_notional) < self.max_net_delta:
+                    self.bus.publish('SIGNAL_GENERATED', {'direction': 'SHORT_SPREAD', 'z_score': short_z_score})
                 
         # Exit logic
         if abs(z_score) <= self.exit_threshold:
@@ -395,9 +409,12 @@ class BackgroundAnalyticsWorker:
             else:
                 half_life_periods = np.inf
                 
+            # Convert 1m periods to 1s ticks for the ExecutionManager timeout math
+            half_life_ticks = half_life_periods * 60.0
+                
             # Toxicity Gating
             is_coint = p_value < 0.05
-            is_hl_valid = half_life_periods < self.max_half_life
+            is_hl_valid = half_life_ticks < self.max_half_life
             
             is_toxic = not (is_coint and is_hl_valid)
             
@@ -405,7 +422,7 @@ class BackgroundAnalyticsWorker:
             self.bus.publish('REGIME_CHANGE', {
                 'toxic': is_toxic,
                 'p_value': p_value,
-                'half_life': half_life_periods
+                'half_life': half_life_ticks
             })
             
         except Exception as e:
@@ -430,13 +447,16 @@ class PortfolioManager:
         self.total_fees_paid = 0.0
         self.realized_pnl = 0.0
         self.avg_entry_prices = {target: 0.0, feature: 0.0}
+        self.recent_trades = []
         
         self.bus.subscribe('ORDER_UPDATE', self._on_order_update)
         
     def _on_order_update(self, payload: dict):
         status = payload.get('status')
         if status == 'FILLED':
-            symbol = payload['symbol']
+            symbol = payload.get('symbol')
+            if not symbol:
+                return
             qty = float(payload.get('filled_qty', 0.0))
             price = float(payload.get('price', 0.0))
             side = payload.get('side', '')
@@ -475,6 +495,33 @@ class PortfolioManager:
                 self.positions[symbol] = new_pos
                 self.cash -= (qty * price * sign) + fee
                 self.total_fees_paid += fee
+                
+                trade_record = {
+                    'timestamp': payload.get('transaction_time', payload.get('timestamp', 0)),
+                    'symbol': symbol,
+                    'side': side.lower(),
+                    'qty': qty,
+                    'price': price,
+                    'fee': fee,
+                    'realized_pnl': pnl if ((prev_pos > 0 and side == 'SELL') or (prev_pos < 0 and side == 'BUY')) else 0.0
+                }
+                self.recent_trades.append(trade_record)
+                if len(self.recent_trades) > 100:
+                    self.recent_trades.pop(0)
+
+    def get_unrealized_pnl(self, target_bid: float, target_ask: float, feature_bid: float, feature_ask: float) -> float:
+        upnl = 0.0
+        # Target Leg Liquidation Value
+        t_pos = self.positions.get(self.target, 0.0)
+        if t_pos > 0: upnl += (target_bid - self.avg_entry_prices.get(self.target, 0.0)) * t_pos
+        elif t_pos < 0: upnl += (target_ask - self.avg_entry_prices.get(self.target, 0.0)) * t_pos
+        
+        # Feature Leg Liquidation Value
+        f_pos = self.positions.get(self.feature, 0.0)
+        if f_pos > 0: upnl += (feature_bid - self.avg_entry_prices.get(self.feature, 0.0)) * f_pos
+        elif f_pos < 0: upnl += (feature_ask - self.avg_entry_prices.get(self.feature, 0.0)) * f_pos
+        
+        return upnl
 
     def get_nav(self, target_price: float, feature_price: float) -> float:
         nav = self.cash
@@ -711,9 +758,9 @@ class TradingEngine:
     def __init__(self, target='BTCUSDT', feature='ETHUSDT'):
         self.bus = EventBus()
         self.model = StatArbModel(self.bus, target=target, feature=feature)
-        self.signal_generator = SignalGenerator(self.bus, target=target, feature=feature)
-        self.background_worker = BackgroundAnalyticsWorker(self.bus)
         self.portfolio = PortfolioManager(self.bus, target=target, feature=feature)
+        self.signal_generator = SignalGenerator(self.bus, target=target, feature=feature, portfolio=self.portfolio)
+        self.background_worker = BackgroundAnalyticsWorker(self.bus)
         self.execution = ExecutionManager(self.bus, target=target, feature=feature, portfolio=self.portfolio)
         self.target = target
         self.feature = feature
@@ -738,9 +785,9 @@ class TradingEngine:
         
         self.bus = EventBus()
         self.model = StatArbModel(self.bus, target=self.target, feature=self.feature)
-        self.signal_generator = SignalGenerator(self.bus, target=self.target, feature=self.feature)
-        self.background_worker = BackgroundAnalyticsWorker(self.bus)
         self.portfolio = PortfolioManager(self.bus, target=self.target, feature=self.feature)
+        self.signal_generator = SignalGenerator(self.bus, target=self.target, feature=self.feature, portfolio=self.portfolio)
+        self.background_worker = BackgroundAnalyticsWorker(self.bus)
         self.execution = ExecutionManager(self.bus, target=self.target, feature=self.feature, portfolio=self.portfolio)
         
         self.last_ts = 0
@@ -806,10 +853,15 @@ class TradingEngine:
             'portfolio_value': self.portfolio.get_nav(self.model.target_price, self.model.feature_price),
             'capital': self.portfolio.cash,
             'realized_pnl': getattr(self.portfolio, 'realized_pnl', 0.0),
+            'unrealized_pnl': self.portfolio.get_unrealized_pnl(
+                self.model.target_bid, self.model.target_ask, 
+                self.model.feature_bid, self.model.feature_ask
+            ) if hasattr(self.portfolio, 'get_unrealized_pnl') else 0.0,
             'total_fees_paid': getattr(self.portfolio, 'total_fees_paid', 0.0),
             'positions': self.portfolio.positions,
             'target_position': self.portfolio.positions.get(self.target, 0.0),
             'feature_position': self.portfolio.positions.get(self.feature, 0.0),
+            'avg_entry_prices': getattr(self.portfolio, 'avg_entry_prices', {}),
             'net_delta': self.portfolio.get_net_delta(self.model.target_price, self.model.feature_price),
             'spread_metrics': {
                 'current_spread': self.model.spread,
@@ -829,8 +881,8 @@ class TradingEngine:
             },
             'toxicity_flag': self.signal_generator.is_toxic,
             'execution_state': self.execution.state,
-            'recent_trades': [],
-            'pending_orders': []
+            'recent_trades': getattr(self.portfolio, 'recent_trades', [])[-50:],
+            'pending_orders': [self.execution.pending_leg2_template] if getattr(self.execution, 'pending_leg2_template', None) else []
         }
         
     def clear_data(self):
@@ -915,3 +967,6 @@ def set_trade_size(bps):
 def set_auto_trade(enabled):
     # Stub for UI compliance
     pass
+
+def set_strategy_params(payload: dict):
+    engine_instance.bus.publish('UPDATE_STRATEGY_PARAMS', payload)
