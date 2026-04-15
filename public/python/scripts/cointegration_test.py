@@ -303,13 +303,14 @@ if df.empty:
     sys.exit(1)
 
 oos_pct = args.backtest / 100.0 if args.backtest else 0.0
-if oos_pct > 0:
+if args.backtest > 0:
     split_idx = int(len(df) * (1 - oos_pct))
-    train_df = df.iloc[:split_idx].copy()
-    test_df = df.iloc[split_idx:].copy()
-    print(f"Data split: {len(train_df)} In-Sample rows, {len(test_df)} Out-of-Sample rows.")
+    split_timestamp = df.index[split_idx]
+    train_df = df[df.index < split_timestamp].copy()
+    test_df = df[df.index >= split_timestamp].copy()
+    print(f"Data split: {len(train_df)} In-Sample rows ({(1-oos_pct):.0%}), {len(test_df)} Out-of-Sample rows ({oos_pct:.0%}).")
 else:
-    split_idx = len(df)
+    split_timestamp = df.index[-1] + pd.Timedelta(days=1000)
     train_df = df.copy()
     test_df = pd.DataFrame()
 
@@ -471,10 +472,12 @@ prev_below = df['Z_Below'].shift(1, fill_value=False)
 df['Signal_Above_Cross'] = df['Z_Above'] & (~prev_above)
 df['Signal_Below_Cross'] = df['Z_Below'] & (~prev_below)
 
-bullish_signals = int(df['Signal_Below_Cross'].sum())
-bearish_signals = int(df['Signal_Above_Cross'].sum())
-raw_exceedance_count = int(df['Z_Above'].sum() + df['Z_Below'].sum())
-raw_exceedance_pct = raw_exceedance_count / len(df) if len(df) > 0 else 0.0
+train_eval_df = df[df.index < split_timestamp]
+
+bullish_signals = int(train_eval_df['Signal_Below_Cross'].sum())
+bearish_signals = int(train_eval_df['Signal_Above_Cross'].sum())
+raw_exceedance_count = int(train_eval_df['Z_Above'].sum() + train_eval_df['Z_Below'].sum())
+raw_exceedance_pct = raw_exceedance_count / len(train_eval_df) if len(train_eval_df) > 0 else 0.0
 
 expected_exceedance_rate = 2 * (1 - norm.cdf(opt_sigma))
 
@@ -482,13 +485,13 @@ print(f"Identified {bullish_signals} bullish signals and {bearish_signals} beari
 print(f"       Total raw exceedances outside ±{opt_sigma:.2f}σ: {raw_exceedance_count} rows ({raw_exceedance_pct:.2%}), including persistence of the same signal.")
 
 signal_count = bullish_signals + bearish_signals
-signal_pct = signal_count / len(df) if len(df) > 0 else 0.0
+signal_pct = signal_count / len(train_eval_df) if len(train_eval_df) > 0 else 0.0
 
 # Flag warning if exceeded significantly more than dynamic normal distribution expectation (e.g., > 1.5x)
 max_expected_pct = expected_exceedance_rate * 1.5
 if raw_exceedance_pct > max_expected_pct:
     print(color_text("   !!! WARNING: The Z-score exceedance rate is unusually high.", YELLOW))
-    print(color_text(f"       {raw_exceedance_count} out of {len(df)} points ({raw_exceedance_pct:.2%}) exceed ±{opt_sigma:.2f}σ.", YELLOW))
+    print(color_text(f"       {raw_exceedance_count} out of {len(train_eval_df)} points ({raw_exceedance_pct:.2%}) exceed ±{opt_sigma:.2f}σ.", YELLOW))
     print(color_text(f"       In a normal distribution, ±{opt_sigma:.2f}σ events should occur only about {expected_exceedance_rate:.2%} of the time.", YELLOW))
     print(color_text("       This strongly suggests the spread distribution has extremely fat tails, or more likely, the rolling window for Z-score calculation is too short.", YELLOW))
 
@@ -498,12 +501,15 @@ if raw_exceedance_pct > max_expected_pct:
 # ==============================================================================
 print("\n[5/7] Calculating Static Hedge Ratio and Testing Cointegration...")
 
-# Calculate static beta for visualization/baseline purposes
-X = sm.add_constant(np.log(df['Feature_Price']))
-Y = np.log(df['Close'])
-static_model = sm.OLS(Y, X).fit()
+# Calculate static beta for visualization/baseline purposes strictly on training data
+X_train = sm.add_constant(np.log(train_eval_df['Feature_Price']))
+Y_train = np.log(train_eval_df['Close'])
+static_model = sm.OLS(Y_train, X_train).fit()
 static_beta = static_model.params['Feature_Price']
-df['Static_Spread'] = static_model.resid 
+
+# Apply static beta dynamically to full series for visualization
+X_all = sm.add_constant(np.log(df['Feature_Price']))
+df['Static_Spread'] = np.log(df['Close']) - static_model.predict(X_all) 
 
 print(f"Static Hedge Ratio (Beta): {static_beta:.4f}")
 
@@ -511,7 +517,7 @@ try:
     print("      -> Downsampling data for cointegration test to improve performance...")
     # Cointegration is a long-term property. Downsampling to 15-minute intervals drastically speeds up 
     # the ADF lag-search built into the test without losing the macro-equilibrium relationship.
-    coint_df = df[['Close', 'Feature_Price']].resample('15min').last().dropna() if len(df) > 10000 else df
+    coint_df = train_eval_df[['Close', 'Feature_Price']].resample('15min').last().dropna() if len(train_eval_df) > 10000 else train_eval_df
     
     # Use the proper Engle-Granger cointegration test on the downsampled concurrent log price series
     coint_score, p_value, critical_values = coint(np.log(coint_df['Close']), np.log(coint_df['Feature_Price']))
@@ -537,9 +543,10 @@ print("\n[6/7] Calculating Hurst Exponent and Mean-Reversion Half-Life...")
 # These functions have been moved up
 
 
-hurst_static = get_hurst_exponent_dynamic(df['Static_Spread'].dropna().values, rolling_window)
-hurst = get_hurst_exponent_dynamic(df['Dynamic_Spread'].dropna().values, rolling_window)
-half_life = get_half_life(df['Dynamic_Spread'].dropna(), interval)
+horst_static_input = df.loc[train_eval_df.index, 'Static_Spread'].dropna().values
+hurst_static = get_hurst_exponent_dynamic(horst_static_input, rolling_window)
+hurst = get_hurst_exponent_dynamic(train_eval_df['Dynamic_Spread'].dropna().values, rolling_window)
+half_life = get_half_life(train_eval_df['Dynamic_Spread'].dropna(), interval)
 half_life_seconds = half_life * parse_interval_seconds(interval)
 half_life_readable = format_duration(half_life_seconds)
 
@@ -604,8 +611,9 @@ fig = plt.figure(figsize=(16, 12))
 
 ax1 = plt.subplot(2, 2, 1)
 ax1.scatter(df['Feature_Price'], df['Close'], alpha=0.3, color='blue', s=10)
-ax1.plot(df['Feature_Price'], static_model.predict(sm.add_constant(df['Feature_Price'])), color='red', linewidth=2)
-ax1.set_title(f'Price Scatter: {feature_ticker} vs {target_ticker} (OLS Line)')
+rolling_pred_close = np.exp(df['Rolling_Alpha'] + df['Rolling_Beta'] * np.log(df['Feature_Price']))
+ax1.scatter(df['Feature_Price'], rolling_pred_close, color='red', alpha=0.5, s=2)
+ax1.set_title(f'Price Scatter: {feature_ticker} vs {target_ticker} (Rolling Mean)')
 ax1.set_xlabel(f'{feature_ticker} Price')
 ax1.set_ylabel(f'{target_ticker} Price')
 ax1.grid(True, alpha=0.3)
@@ -627,10 +635,11 @@ ax3.legend(loc='upper right')
 ax3.grid(True, alpha=0.3)
 
 ax4 = plt.subplot(2, 2, 4)
-ax4.hist(df['Z_Score'], bins=60, density=True, color='skyblue', edgecolor='black', alpha=0.7)
-x_vals = np.linspace(df['Z_Score'].min(), df['Z_Score'].max(), 300)
+ax4.hist(df['Z_Score'].clip(-10, 10), bins=60, range=(-10, 10), density=True, color='skyblue', edgecolor='black', alpha=0.7)
+x_vals = np.linspace(-10, 10, 300)
 normal_pdf = (1.0 / np.sqrt(2 * np.pi)) * np.exp(-0.5 * x_vals**2)
 ax4.plot(x_vals, normal_pdf, color='red', linestyle='--', linewidth=2, label='Standard Normal PDF')
+ax4.set_xlim(-10, 10)
 ax4.set_title('Z-Score Distribution vs. Expected Normal')
 ax4.set_xlabel('Z-Score')
 ax4.set_ylabel('Density')
@@ -644,7 +653,7 @@ plt.close(fig)
 print(f"Saved plot: {output_path}")
 
 # --- Generate standalone spread chart ---
-df['Spread_bps'] = (df['Dynamic_Spread'] / df['Close']) * 10000
+df['Spread_bps'] = df['Dynamic_Spread'] * 10000
 
 fig_spread = plt.figure(figsize=(16, 4))
 ax_spread = fig_spread.add_subplot(1, 1, 1)
@@ -685,7 +694,11 @@ if args.backtest:
     pos = 0  # 1 for Long Spread, -1 for Short Spread, 0 for Flat
     trades = 0
 
-    for i in range(1, n):
+    # Find integer index mapped to the OOS timestamp so drops don't misalign indexing
+    oos_indices = np.where(df.index >= split_timestamp)[0] if 'split_timestamp' in locals() else []
+    start_eval_idx = max(1, oos_indices[0]) if len(oos_indices) > 0 else 1
+
+    for i in range(start_eval_idx, n):
         # Calculate PnL accurately mapping to Price-Beta Cointegration
         ret_target = np.log(targets[i] / targets[i-1]) if targets[i-1] > 0 and targets[i] > 0 else 0.0
         ret_feature = np.log(features[i] / features[i-1]) if features[i-1] > 0 and features[i] > 0 else 0.0
@@ -727,6 +740,7 @@ if args.backtest:
     df['Net_Return'] = net_returns
     df['Cumulative_Gross'] = df['Gross_Return'].cumsum()
     df['Cumulative_Net'] = df['Net_Return'].cumsum()
+    df['Position'] = positions
 
     total_gross = df['Cumulative_Gross'].iloc[-1]
     total_net = df['Cumulative_Net'].iloc[-1]
@@ -752,8 +766,8 @@ if args.backtest:
     print(f"      Annualized Net Sharpe Ratio: {sharpe_net:.2f}")
     print(f"      Max Drawdown (Net): {max_dd:.2%}")
 
-    fig_bt = plt.figure(figsize=(16, 6))
-    ax_bt = fig_bt.add_subplot(1, 1, 1)
+    fig_bt = plt.figure(figsize=(16, 12))
+    ax_bt = fig_bt.add_subplot(2, 1, 1)
     ax_bt.plot(df.index, df['Cumulative_Gross'], label='Cumulative Gross Return', color='blue', alpha=0.5)
     ax_bt.plot(df.index, df['Cumulative_Net'], label='Cumulative Net Return', color='red', linewidth=1.5)
     ax_bt.set_title('Backtest Performance: Gross vs Net Return')
@@ -761,6 +775,54 @@ if args.backtest:
     ax_bt.set_xlabel('Datetime')
     ax_bt.legend(loc='upper left')
     ax_bt.grid(True, alpha=0.3)
+
+    # Generate isolated scatter plot showing entry/exits strictly for the backtest window
+    if 'split_timestamp' in locals():
+        bt_df = df[df.index >= split_timestamp].copy()
+        if bt_df.empty:
+            bt_df = df.copy()
+    else:
+        bt_df = df.copy()
+
+    if not bt_df.empty:
+        # Calculate diff to find where positions change
+        bt_df['Pos_Diff'] = bt_df['Position'].diff()
+
+        # Entry points
+        long_entries = bt_df[(bt_df['Pos_Diff'] > 0) & (bt_df['Position'] == 1)]
+        short_entries = bt_df[(bt_df['Pos_Diff'] < 0) & (bt_df['Position'] == -1)]
+        
+        # Exit points (closing a long or a short)
+        close_longs = bt_df[(bt_df['Pos_Diff'] < 0) & (bt_df['Position'] == 0)]
+        close_shorts = bt_df[(bt_df['Pos_Diff'] > 0) & (bt_df['Position'] == 0)]
+
+        ax_trades = fig_bt.add_subplot(2, 1, 2)
+
+        # Plot the spread itself
+        ax_trades.plot(bt_df.index, bt_df['Spread_bps'], color='darkgray', linewidth=1, label='Normalized Spread (bps)', alpha=0.6)
+
+        # Plot Long Entries/Exits
+        ax_trades.scatter(long_entries.index, long_entries['Spread_bps'], color='green', marker='^', s=100, label='Long Spread Entry', zorder=5)
+        ax_trades.scatter(close_longs.index, close_longs['Spread_bps'], color='limegreen', marker='x', s=80, label='Long Spread Exit', zorder=5)
+
+        # Plot Short Entries/Exits
+        ax_trades.scatter(short_entries.index, short_entries['Spread_bps'], color='red', marker='v', s=100, label='Short Spread Entry', zorder=5)
+        ax_trades.scatter(close_shorts.index, close_shorts['Spread_bps'], color='lightcoral', marker='x', s=80, label='Short Spread Exit', zorder=5)
+
+        # Helper Threshold lines
+        bt_std_bps = bt_df['Spread_Std'].mean() * 10000 if 'Spread_Std' in bt_df.columns else 0
+        target_thresh = opt_sigma * bt_std_bps if bt_std_bps > 0 else 10.0
+        
+        ax_trades.axhline(target_thresh, color='darkred', linestyle='--', alpha=0.4)
+        ax_trades.axhline(-target_thresh, color='darkgreen', linestyle='--', alpha=0.4)
+        ax_trades.axhline(0, color='blue', alpha=0.3)
+
+        ax_trades.set_title('Out-of-Sample Trade Executions mapped to Normalized Spread (bps)')
+        ax_trades.set_ylabel('Spread (bps)')
+        ax_trades.set_xlabel('Datetime')
+        ax_trades.legend(loc='upper right')
+        ax_trades.grid(True, alpha=0.3)
+        
     fig_bt.tight_layout()
 
     output_bt_path = 'cointegration_backtest.report.png'
