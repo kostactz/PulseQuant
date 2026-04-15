@@ -370,8 +370,9 @@ print(f"Highest correlation ({best_corr:.4f}) found at lag: {best_lag}")
 if best_lag < 0:
     abs_lag = abs(best_lag)
     print(color_text(f"-> Conclusion: {feature_ticker} LEADS {target_ticker} by {abs_lag} periods.", GREEN))
-    print("   Maintaining concurrent alignment for strict stat-arb execution.")
-    # REMOVED: df['Feature_Price'] = df['Feature_Price'].shift(abs_lag)
+    print("   Aligning feature price to predictive state by shifting forward.")
+    df['Feature_Price'] = df['Feature_Price'].shift(abs_lag)
+    df = df.dropna()
 elif best_lag > 0:
     print(color_text(f"-> Conclusion: {target_ticker} LEADS {feature_ticker} by {best_lag} periods. ({feature_ticker} is likely useless).", RED))
 else:
@@ -686,14 +687,14 @@ if args.backtest:
 
     for i in range(1, n):
         # Calculate PnL accurately mapping to Price-Beta Cointegration
-        ret_target = (targets[i] - targets[i-1]) / targets[i-1] if targets[i-1] > 0 else 0.0
-        ret_feature = (features[i] - features[i-1]) / features[i-1] if features[i-1] > 0 else 0.0
+        ret_target = np.log(targets[i] / targets[i-1]) if targets[i-1] > 0 and targets[i] > 0 else 0.0
+        ret_feature = np.log(features[i] / features[i-1]) if features[i-1] > 0 and features[i] > 0 else 0.0
         
         spread_return = (ret_target - betas[i] * ret_feature) / (1.0 + abs(betas[i])) if (1.0 + abs(betas[i])) > 0 else 0.0
 
         prev_pos = pos
 
-        # Transition Logic (5. Zero latency execution identical to optimizer)
+        # Transition Logic (1-period latency execution identically to optimizer)
         if pos == 0:
             if z[i-1] < -opt_sigma:
                 pos = 1
@@ -707,7 +708,7 @@ if args.backtest:
                 pos = 0
         
         # Store gross return applied to the position held during this step
-        gross_returns[i] = pos * spread_return
+        gross_returns[i] = prev_pos * spread_return
         period_net_return = gross_returns[i]
 
         positions[i] = pos

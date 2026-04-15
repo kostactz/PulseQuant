@@ -109,10 +109,10 @@ def calculate_rolling_metrics(df_in, window_size, delta=1e-5, r_var=1e-3):
                                  (df_calc['Rolling_Beta'].shift(1) * df_calc['Log_Feature']) - 
                                  df_calc['Rolling_Alpha'].shift(1))
     
-    df_calc['Spread_Mean'] = df_calc['Dynamic_Spread'].rolling(window=window_size).mean()
+    # df_calc['Spread_Mean'] = df_calc['Dynamic_Spread'].rolling(window=window_size).mean() # Removed to prevent double filtering
     df_calc['Spread_Std'] = df_calc['Dynamic_Spread'].rolling(window=window_size).std()
     
-    df_calc['Z_Score'] = (df_calc['Dynamic_Spread'] - df_calc['Spread_Mean']) / (df_calc['Spread_Std'] + 1e-10)
+    df_calc['Z_Score'] = df_calc['Dynamic_Spread'] / (df_calc['Spread_Std'] + 1e-10)
     return df_calc
 
 def optimize_parameters(df_in, half_life_periods, interval, args_rolling_window='auto', args_sigma_threshold='auto', taker_fee=0.05, verbose=False):
@@ -126,9 +126,12 @@ def optimize_parameters(df_in, half_life_periods, interval, args_rolling_window=
     print(f"\n[Opt] Starting Walk-Forward Optimization for Rolling Window & Sigma Threshold...")
     print(f"      Baseline Half-Life: {half_life_periods:.2f} periods")
     
-    if np.isinf(half_life_periods) or np.isnan(half_life_periods):
+    if np.isinf(half_life_periods) or np.isnan(half_life_periods) or half_life_periods <= 0:
         print(color_text("      -> Half-Life is invalid. Falling back to default window of 800.", YELLOW))
         half_life_periods = 800
+    elif half_life_periods > 10000:
+        print(color_text(f"      -> Half-Life ({half_life_periods:.2f}) exceeds cap (10,000). Capping to prevent window expansion issues.", YELLOW))
+        half_life_periods = 10000
 
     if str(args_rolling_window).lower() == 'auto':
         start_val = max(50, int(1 * half_life_periods))
@@ -195,8 +198,8 @@ def optimize_parameters(df_in, half_life_periods, interval, args_rolling_window=
                 
                 spread_returns = np.zeros(len(test_calc))
                 for i in range(1, len(test_calc)):
-                    ret_target = (targets[i] - targets[i-1]) / targets[i-1] if targets[i-1] > 0 else 0.0
-                    ret_feature = (features[i] - features[i-1]) / features[i-1] if features[i-1] > 0 else 0.0
+                    ret_target = np.log(targets[i] / targets[i-1]) if targets[i-1] > 0 and targets[i] > 0 else 0.0
+                    ret_feature = np.log(features[i] / features[i-1]) if features[i-1] > 0 and features[i] > 0 else 0.0
                     
                     gross_spread_return = (ret_target - betas[i] * ret_feature) / (1.0 + abs(betas[i])) if (1.0 + abs(betas[i])) > 0 else 0.0
                     
