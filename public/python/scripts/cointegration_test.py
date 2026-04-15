@@ -679,14 +679,21 @@ if args.backtest:
     taker_pct = args.taker_fee / 100.0
     maker_pct = args.maker_fee / 100.0
 
+    if 'split_timestamp' in locals():
+        bt_df = df[df.index >= split_timestamp].copy()
+        if bt_df.empty:
+            bt_df = df.copy()
+    else:
+        bt_df = df.copy()
+
     # Retrieve required columns as NumPy arrays for fast iteration
-    z = df['Z_Score'].values
-    features = df['Feature_Price'].values
-    targets = df['Close'].values
-    betas = df['Rolling_Beta'].shift(1).fillna(0).values
+    z = bt_df['Z_Score'].values
+    features = bt_df['Feature_Price'].values
+    targets = bt_df['Close'].values
+    betas = bt_df['Rolling_Beta'].shift(1).fillna(0).values
 
     # Pre-allocate arrays
-    n = len(df)
+    n = len(bt_df)
     gross_returns = np.zeros(n)
     net_returns = np.zeros(n)
     positions = np.zeros(n)
@@ -694,11 +701,7 @@ if args.backtest:
     pos = 0  # 1 for Long Spread, -1 for Short Spread, 0 for Flat
     trades = 0
 
-    # Find integer index mapped to the OOS timestamp so drops don't misalign indexing
-    oos_indices = np.where(df.index >= split_timestamp)[0] if 'split_timestamp' in locals() else []
-    start_eval_idx = max(1, oos_indices[0]) if len(oos_indices) > 0 else 1
-
-    for i in range(start_eval_idx, n):
+    for i in range(1, n):
         # Calculate PnL accurately mapping to Price-Beta Cointegration
         ret_target = np.log(targets[i] / targets[i-1]) if targets[i-1] > 0 and targets[i] > 0 else 0.0
         ret_feature = np.log(features[i] / features[i-1]) if features[i-1] > 0 and features[i] > 0 else 0.0
@@ -707,7 +710,7 @@ if args.backtest:
 
         prev_pos = pos
 
-        # Transition Logic (1-period latency execution identically to optimizer)
+        # Transition Logic (0-period latency execution identically to optimizer)
         if pos == 0:
             if z[i-1] < -opt_sigma:
                 pos = 1
@@ -721,7 +724,7 @@ if args.backtest:
                 pos = 0
         
         # Store gross return applied to the position held during this step
-        gross_returns[i] = prev_pos * spread_return
+        gross_returns[i] = pos * spread_return
         period_net_return = gross_returns[i]
 
         positions[i] = pos
@@ -736,14 +739,14 @@ if args.backtest:
             
         net_returns[i] = period_net_return
 
-    df['Gross_Return'] = gross_returns
-    df['Net_Return'] = net_returns
-    df['Cumulative_Gross'] = df['Gross_Return'].cumsum()
-    df['Cumulative_Net'] = df['Net_Return'].cumsum()
-    df['Position'] = positions
+    bt_df['Gross_Return'] = gross_returns
+    bt_df['Net_Return'] = net_returns
+    bt_df['Cumulative_Gross'] = bt_df['Gross_Return'].cumsum()
+    bt_df['Cumulative_Net'] = bt_df['Net_Return'].cumsum()
+    bt_df['Position'] = positions
 
-    total_gross = df['Cumulative_Gross'].iloc[-1]
-    total_net = df['Cumulative_Net'].iloc[-1]
+    total_gross = bt_df['Cumulative_Gross'].iloc[-1] if len(bt_df) > 0 else 0.0
+    total_net = bt_df['Cumulative_Net'].iloc[-1] if len(bt_df) > 0 else 0.0
 
     # Annualized Sharpe (comparing to interval)
     sr_net_mean = np.mean(net_returns)
@@ -754,9 +757,9 @@ if args.backtest:
     sharpe_net = (sr_net_mean / sr_net_std) * ann_factor
 
     # Max Drawdown
-    peak = np.maximum.accumulate(df['Cumulative_Net'])
-    drawdown = peak - df['Cumulative_Net']
-    max_dd = np.max(drawdown)
+    peak = np.maximum.accumulate(bt_df['Cumulative_Net'])
+    drawdown = peak - bt_df['Cumulative_Net']
+    max_dd = np.max(drawdown) if len(drawdown) > 0 else 0.0
 
     round_trips = trades // 2
 
@@ -768,21 +771,13 @@ if args.backtest:
 
     fig_bt = plt.figure(figsize=(16, 12))
     ax_bt = fig_bt.add_subplot(2, 1, 1)
-    ax_bt.plot(df.index, df['Cumulative_Gross'], label='Cumulative Gross Return', color='blue', alpha=0.5)
-    ax_bt.plot(df.index, df['Cumulative_Net'], label='Cumulative Net Return', color='red', linewidth=1.5)
-    ax_bt.set_title('Backtest Performance: Gross vs Net Return')
+    ax_bt.plot(bt_df.index, bt_df['Cumulative_Gross'], label='Cumulative Gross Return', color='blue', alpha=0.5)
+    ax_bt.plot(bt_df.index, bt_df['Cumulative_Net'], label='Cumulative Net Return', color='red', linewidth=1.5)
+    ax_bt.set_title('Backtest Performance: Gross vs Net Return (Out-of-Sample)')
     ax_bt.set_ylabel('Cumulative Return')
     ax_bt.set_xlabel('Datetime')
     ax_bt.legend(loc='upper left')
     ax_bt.grid(True, alpha=0.3)
-
-    # Generate isolated scatter plot showing entry/exits strictly for the backtest window
-    if 'split_timestamp' in locals():
-        bt_df = df[df.index >= split_timestamp].copy()
-        if bt_df.empty:
-            bt_df = df.copy()
-    else:
-        bt_df = df.copy()
 
     if not bt_df.empty:
         # Calculate diff to find where positions change
@@ -809,12 +804,16 @@ if args.backtest:
         ax_trades.scatter(short_entries.index, short_entries['Spread_bps'], color='red', marker='v', s=100, label='Short Spread Entry', zorder=5)
         ax_trades.scatter(close_shorts.index, close_shorts['Spread_bps'], color='lightcoral', marker='x', s=80, label='Short Spread Exit', zorder=5)
 
-        # Helper Threshold lines
-        bt_std_bps = bt_df['Spread_Std'].mean() * 10000 if 'Spread_Std' in bt_df.columns else 0
-        target_thresh = opt_sigma * bt_std_bps if bt_std_bps > 0 else 10.0
-        
-        ax_trades.axhline(target_thresh, color='darkred', linestyle='--', alpha=0.4)
-        ax_trades.axhline(-target_thresh, color='darkgreen', linestyle='--', alpha=0.4)
+        # Helper Threshold lines (Dynamic Rolling Bands)
+        if 'Spread_Std' in bt_df.columns:
+            dynamic_upper = opt_sigma * bt_df['Spread_Std'] * 10000
+            dynamic_lower = -opt_sigma * bt_df['Spread_Std'] * 10000
+            ax_trades.plot(bt_df.index, dynamic_upper, color='darkred', linestyle='--', alpha=0.4, label=f'+{opt_sigma}σ Band')
+            ax_trades.plot(bt_df.index, dynamic_lower, color='darkgreen', linestyle='--', alpha=0.4, label=f'-{opt_sigma}σ Band')
+        else:
+            ax_trades.axhline(10.0, color='darkred', linestyle='--', alpha=0.4)
+            ax_trades.axhline(-10.0, color='darkgreen', linestyle='--', alpha=0.4)
+            
         ax_trades.axhline(0, color='blue', alpha=0.3)
 
         ax_trades.set_title('Out-of-Sample Trade Executions mapped to Normalized Spread (bps)')

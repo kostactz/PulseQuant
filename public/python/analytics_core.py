@@ -70,8 +70,21 @@ def calculate_rolling_metrics(df_in, window_size, delta=1e-5, r_var=1e-3):
     alpha = np.zeros(n)
     
     if n > 0:
-        state0 = y[0]
-        state1 = 0.0
+        burn_in = min(n, max(100, window_size if isinstance(window_size, int) else 100))
+        if burn_in > 5:
+            try:
+                X_burn = sm.add_constant(x[:burn_in])
+                y_burn = y[:burn_in]
+                res = sm.OLS(y_burn, X_burn).fit()
+                state0 = res.params[0]
+                state1 = res.params[1] if len(res.params) > 1 else 0.0
+            except Exception:
+                state0 = y[0]
+                state1 = 0.0
+        else:
+            state0 = y[0]
+            state1 = 0.0
+            
         p00 = 1.0; p01 = 0.0; p10 = 0.0; p11 = 1.0
         
         for i in range(n):
@@ -213,7 +226,7 @@ def optimize_parameters(df_in, half_life_periods, interval, args_rolling_window=
                     
                     turnover = abs(pos - prev_pos)
                     fee = turnover * taker_pct
-                    spread_returns[i] = (prev_pos * gross_spread_return) - fee
+                    spread_returns[i] = (pos * gross_spread_return) - fee
                     
                 all_spread_returns.extend(spread_returns)
                 
