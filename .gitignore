@@ -14,6 +14,15 @@ public/python/__pycache__/
 public/python/*.py[cod]
 *.py[cod]
 
+# Build stuff
+build/
+dist/
+*.egg-info/
+
+# Data outputs and caches
+.cache/
+test/resources/captures/
+
 # Virtual environments
 .venv/
 venv/

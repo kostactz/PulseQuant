@@ -4,10 +4,10 @@ import urllib.request
 import zipfile
 import io
 import os
+import tempfile
 import json
 import csv
 from pathlib import Path
-from collections import deque
 
 def parse_date(date_str):
     return datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
@@ -17,11 +17,18 @@ def daterange(start_date, end_date):
         yield start_date + datetime.timedelta(n)
 
 def download_and_extract(url, cache_path):
+    """Download a zip from *url*, extract the first file and save to *cache_path*.
+
+    Writes are atomic: content is first written to a temporary file in the same
+    directory, then atomically renamed to *cache_path*.  This prevents partially
+    written files from poisoning the cache on network interruptions.
+    """
     if os.path.exists(cache_path):
         print(f"Cache hit: {cache_path}")
         return True
 
     print(f"Downloading {url}...")
+    cache_dir = os.path.dirname(cache_path) or '.'
     try:
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req) as response:
@@ -29,8 +36,15 @@ def download_and_extract(url, cache_path):
                 name = z.namelist()[0]
                 with z.open(name) as f:
                     content = f.read()
-                    with open(cache_path, 'wb') as out_f:
-                        out_f.write(content)
+        # Atomic write: temp file → rename
+        fd, tmp_path = tempfile.mkstemp(dir=cache_dir, suffix='.tmp')
+        try:
+            with os.fdopen(fd, 'wb') as tmp_f:
+                tmp_f.write(content)
+            os.rename(tmp_path, cache_path)
+        except Exception:
+            os.unlink(tmp_path)
+            raise
         return True
     except urllib.error.HTTPError as e:
         if e.code == 404:
@@ -108,14 +122,23 @@ def parse_funding_rate_file(filepath, symbol):
     return events
 
 def main():
-    parser = argparse.ArgumentParser(description="Fetch Binance Vision Futures Data")
-    parser.add_argument('--symbols', nargs='+', required=True, help='Symbols to fetch (e.g., ORDIUSDC SUIUSDC)')
+    parser = argparse.ArgumentParser(
+        description="Fetch Binance Vision Futures Data (bookTicker + fundingRate).",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument('--symbols', nargs='+', required=True,
+                        help='Symbols to fetch (e.g., ORDIUSDC SUIUSDC)')
     parser.add_argument('--start-date', required=True, help='Start date YYYY-MM-DD')
     parser.add_argument('--end-date', required=True, help='End date YYYY-MM-DD')
-    parser.add_argument('--cache-dir', default='.cache/vision', help='Directory to store unzipped CSVs')
+    parser.add_argument('--cache-dir', default='.cache/vision',
+                        help='Directory to store unzipped CSVs')
     parser.add_argument('--output', default=None, help='Output .jsonl path')
+    parser.add_argument('--include-aggtrades', action='store_true', default=False,
+                        help='(Future) also fetch aggTrades for empirical slippage modelling')
 
     args = parser.parse_args()
+    if args.include_aggtrades:
+        print("[INFO] --include-aggtrades requested but not yet implemented; skipping.")
 
     start_date = parse_date(args.start_date)
     end_date = parse_date(args.end_date)
@@ -163,18 +186,31 @@ def main():
                     fr_events_all = parse_funding_rate_file(fr_cache_path_m, symbol)
                     # Filter to this date
                     for ev in fr_events_all:
-                        ev_date = datetime.datetime.utcfromtimestamp(ev['data']['timestamp']/1000.0).date()
+                        ev_date = datetime.datetime.fromtimestamp(
+                            ev['data']['timestamp'] / 1000.0,
+                            tz=datetime.timezone.utc,
+                        ).date()
                         if ev_date == single_date:
                             all_events.append(ev)
 
     print(f"Sorting {len(all_events)} events...")
     all_events.sort(key=lambda x: x['data']['timestamp'])
 
-    print(f"Writing to {args.output}...")
-    with open(args.output, 'w', encoding='utf-8') as f:
-        for ev in all_events:
-            f.write(json.dumps(ev) + '\n')
-            
+    # Atomic write for the output JSONL as well
+    out_path = str(args.output)
+    out_dir = os.path.dirname(out_path) or '.'
+    print(f"Writing to {out_path}...")
+    fd, tmp_out = tempfile.mkstemp(dir=out_dir, suffix='.tmp')
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            for ev in all_events:
+                f.write(json.dumps(ev) + '\n')
+        os.rename(tmp_out, out_path)
+    except Exception:
+        if os.path.exists(tmp_out):
+            os.unlink(tmp_out)
+        raise
+
     print("Done!")
 
 if __name__ == '__main__':

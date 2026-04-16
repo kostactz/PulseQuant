@@ -185,29 +185,35 @@ class StatArbModel:
         log_y = math.log(self.target_price)
         log_x = math.log(self.feature_price)
 
-        # 1. Update Bivariate Math
+        # ── Look-ahead fix ──────────────────────────────────────────────────
+        # Capture the *prior* beta BEFORE updating the Kalman state so that
+        # the current tick's spread is computed with yesterday's estimate.
+        # This prevents look-ahead bias in Z-score calculations.
+        beta_prior = self.bivariate.get_beta()
+
+        # 1. Update Bivariate Math (Kalman step)
         self.bivariate.append(log_x, log_y)
-        
+
         # Minimum warmup period
         if self.bivariate.count < min(50, self.w_beta // 4):
             return
-            
+
         self.is_ready = True
-        self.beta = self.bivariate.get_beta()
-        
-        # 2. Compute current Log-Spread
-        self.spread = log_y - (self.beta * log_x)
-        
+        self.beta = beta_prior  # expose the *prior* beta (causal)
+
+        # 2. Compute current Log-Spread using the prior (lagged) beta
+        self.spread = log_y - (beta_prior * log_x)
+
         # 3. Update Z-Score Math
         self.spread_stats.append(self.spread)
-        
+
         if self.spread_stats.count > min(25, self.w_z // 4):
             std = self.spread_stats.std()
             if std > 1e-8:
                 self.z_score = (self.spread - self.spread_stats.mean) / std
             else:
                 self.z_score = 0.0
-                
+
         # Emit updated model state
         self.bus.publish('MODEL_UPDATED', {
             'timestamp': timestamp,
@@ -242,40 +248,70 @@ class StatArbModel:
 class SignalGenerator:
     """
     Listens to the model, applies strategy thresholds, and generates trade intents.
-    Computes low-frequency ADF cointegration and Half-life estimators on 1M timers.
+    Uses a dynamic cost hurdle that incorporates maker/taker fees, slippage, and
+    expected funding drag so the engine only trades when edge exceeds total costs.
     """
     def __init__(self, bus: EventBus, target: str, feature: str, portfolio: 'PortfolioManager'):
         self.bus = bus
         self.target = target
         self.feature = feature
         self.portfolio = portfolio
-        
+
         # Parameters
         self.entry_threshold = 2.0
         self.exit_threshold = 0.0
         self.max_half_life = 7200  # in periods
         self.max_net_delta = 50000.0  # max unhedged exposure
-        
-        self.maker_fee = 0.0002
-        self.taker_fee = 0.0005
-        self.min_profit_bps = 2.0
-        
+
+        self.maker_fee = 0.0002   # 2 bps — maker entry
+        self.taker_fee = 0.0005   # 5 bps — taker exit
+        self.slippage_bps = 10.0  # default conservative slippage
+
+        # Dynamic hurdle state
+        self.current_funding_rate: float = 0.0   # most recent funding rate (any symbol)
+        self.half_life_seconds: float = 3600.0   # estimated hold time from regime data
+        self.last_dynamic_hurdle_bps: float = 0.0
+
         self.is_toxic = False
-        
+
         self.bus.subscribe('MODEL_UPDATED', self._on_model_updated)
         self.bus.subscribe('REGIME_CHANGE', self._on_regime_change)
         self.bus.subscribe('UPDATE_STRATEGY_PARAMS', self._on_update_params)
+        self.bus.subscribe('FUNDING_RATE_UPDATE', self._on_funding_rate_update)
 
     def _on_update_params(self, payload: dict):
         if 'sigma_threshold' in payload:
             self.entry_threshold = float(payload['sigma_threshold'])
         if 'max_net_delta' in payload:
             self.max_net_delta = float(payload['max_net_delta'])
-        
+        if 'slippage_bps' in payload:
+            self.slippage_bps = float(payload['slippage_bps'])
+
+    def _on_funding_rate_update(self, payload: dict):
+        """Track the latest funding rate for dynamic hurdle calculation."""
+        rate = payload.get('fundingRate', payload.get('funding_rate', 0.0))
+        self.current_funding_rate = float(rate)
+
+    def _compute_dynamic_hurdle_bps(self) -> float:
+        """Compute the minimum edge (in bps) required to justify a new position.
+
+        dynamic_hurdle = maker_entry_fee + taker_exit_fee + slippage + funding_drag
+
+        estimated hold time ≈ half_life_seconds (capped at one 8-hour funding period)
+        funding_drag ≈ abs(funding_rate) × (hold / (8h)) × 10_000
+        """
+        maker_fee_bps = self.maker_fee * 10_000    # 2 bps
+        taker_fee_bps = self.taker_fee * 10_000    # 5 bps
+        hold_s = min(self.half_life_seconds, 8 * 3600)
+        funding_bps = abs(self.current_funding_rate) * (hold_s / (8 * 3600)) * 10_000
+        hurdle = maker_fee_bps + taker_fee_bps + self.slippage_bps + funding_bps
+        self.last_dynamic_hurdle_bps = hurdle
+        return hurdle
+
     def _on_model_updated(self, payload: dict):
         if not payload['is_ready']:
             return
-            
+
         import math
         target_ask = payload.get('target_ask', payload.get('target_price', 0.0))
         target_bid = payload.get('target_bid', payload.get('target_price', 0.0))
@@ -284,7 +320,7 @@ class SignalGenerator:
         beta = payload.get('beta', 1.0)
         spread_mean = payload.get('spread_mean', 0.0)
         spread_std = payload.get('spread_std', 0.0)
-        
+
         if spread_std > 1e-8 and target_ask > 0 and feature_bid > 0 and target_bid > 0 and feature_ask > 0:
             if beta >= 0:
                 long_spread_val = math.log(target_ask) - beta * math.log(feature_bid)
@@ -292,37 +328,48 @@ class SignalGenerator:
             else:
                 long_spread_val = math.log(target_ask) - beta * math.log(feature_ask)
                 short_spread_val = math.log(target_bid) - beta * math.log(feature_bid)
-                
+
             long_z_score = (long_spread_val - spread_mean) / spread_std
             short_z_score = (short_spread_val - spread_mean) / spread_std
         else:
             long_z_score = 0.0
             short_z_score = 0.0
-            
-        z_score = payload.get('z_score', 0.0) # mid-price for tracking/exit
-        
-        expected_edge_long = (abs(long_z_score) * spread_std) - (self.maker_fee + self.taker_fee)
-        expected_edge_short = (abs(short_z_score) * spread_std) - (self.maker_fee + self.taker_fee)
-        
-        # Entry signals
+
+        z_score = payload.get('z_score', 0.0)  # mid-price for tracking/exit
+
+        # Dynamic cost hurdle replaces static min_profit_bps
+        dynamic_hurdle_bps = self._compute_dynamic_hurdle_bps()
+
+        expected_edge_long_bps = abs(long_z_score) * spread_std * 10_000 - (self.maker_fee + self.taker_fee) * 10_000
+        expected_edge_short_bps = abs(short_z_score) * spread_std * 10_000 - (self.maker_fee + self.taker_fee) * 10_000
+
+        # Entry signals (only when edge clears the dynamic hurdle)
         current_net_delta = self.portfolio.get_net_delta(target_ask, feature_bid)
         expected_target_notional = self.portfolio.cash * 0.1
 
         if not self.is_toxic:
-            if long_z_score < -self.entry_threshold and expected_edge_long * 10000 > self.min_profit_bps:
+            if long_z_score < -self.entry_threshold and expected_edge_long_bps > dynamic_hurdle_bps:
                 if abs(current_net_delta + expected_target_notional) < self.max_net_delta:
                     self.bus.publish('SIGNAL_GENERATED', {'direction': 'LONG_SPREAD', 'z_score': long_z_score})
-            elif short_z_score > self.entry_threshold and expected_edge_short * 10000 > self.min_profit_bps:
+            elif short_z_score > self.entry_threshold and expected_edge_short_bps > dynamic_hurdle_bps:
                 if abs(current_net_delta - expected_target_notional) < self.max_net_delta:
                     self.bus.publish('SIGNAL_GENERATED', {'direction': 'SHORT_SPREAD', 'z_score': short_z_score})
-                
+
         # Exit logic
-        if abs(z_score) <= self.exit_threshold:
+        if abs(z_score) > 4.0:
+            self.bus.publish('SIGNAL_GENERATED', {'direction': 'EMERGENCY_CLOSE_SPREAD', 'z_score': z_score})
+        elif abs(z_score) <= self.exit_threshold:
             self.bus.publish('SIGNAL_GENERATED', {'direction': 'CLOSE_SPREAD', 'z_score': z_score})
 
     def _on_regime_change(self, payload: dict):
         self.is_toxic = payload.get('toxic', False)
-        # We can also handle other parameter updates here in the future
+        # Update expected hold time from half-life estimate (convert from minutes to seconds)
+        hl_mins = payload.get('half_life')
+        if hl_mins is not None and hl_mins > 0:
+            import math as _math
+            hl_secs = float(hl_mins) * 60.0
+            # Clamp to a sensible range [60s, 24h]
+            self.half_life_seconds = max(60.0, min(hl_secs, 86400.0))
 
 
 # ==========================================
@@ -408,6 +455,7 @@ import uuid
 class PortfolioManager:
     """
     Tracks dual-asset positions, cash, and calculates net delta.
+    Accounts for funding payments and exact maker/taker fees.
     """
     def __init__(self, bus: EventBus, target: str, feature: str):
         self.bus = bus
@@ -416,33 +464,59 @@ class PortfolioManager:
         self.positions = {target: 0.0, feature: 0.0}
         self.cash = 100000.0
         self.total_fees_paid = 0.0
+        self.total_funding_paid = 0.0  # net funding debited (positive = paid out)
         self.realized_pnl = 0.0
         self.avg_entry_prices = {target: 0.0, feature: 0.0}
         self.recent_trades = []
-        
+
         self.bus.subscribe('ORDER_UPDATE', self._on_order_update)
+        self.bus.subscribe('FUNDING_RATE_UPDATE', self._on_funding_rate_update)
         
+    def _on_funding_rate_update(self, payload: dict):
+        """Deduct (or credit) funding payments for any open position.
+
+        Convention (Binance perpetuals):
+          payment = position_size × mark_price × funding_rate
+          positive funding_rate → longs pay shorts  → payment > 0 for long positions
+          negative funding_rate → shorts pay longs   → payment < 0 for long positions
+        Cash is reduced by *payment* (a negative payment = credit).
+        """
+        symbol = payload.get('symbol', '').upper()
+        rate = float(payload.get('fundingRate', payload.get('funding_rate', 0.0)))
+        mark = float(payload.get('markPrice', payload.get('mark_price', 0.0)))
+        pos = self.positions.get(symbol, 0.0)
+
+        if pos == 0.0 or mark <= 0.0:
+            return  # no open position or no mark price — skip
+
+        payment = pos * mark * rate  # +ve = longs pay, -ve = longs receive
+        self.cash -= payment
+        self.realized_pnl -= payment
+        self.total_funding_paid += payment
+
     def _on_order_update(self, payload: dict):
         status = payload.get('status')
         if status == 'FILLED':
-            symbol = payload.get('symbol')
+            symbol = payload.get('symbol', '').upper()
             if not symbol:
                 return
             qty = float(payload.get('filled_qty', 0.0))
             price = float(payload.get('price', 0.0))
-            side = payload.get('side', '')
-            is_maker = payload.get('is_maker', False) # If engine/exchange provides it
-            
+            side = payload.get('side', '').upper()
+            # Accept is_maker from replay EXECUTION_REPORT
+            is_maker = bool(payload.get('is_maker', False))
+
             fee_rate = 0.0002 if is_maker else 0.0005
             notional = qty * price
             fee = notional * fee_rate
-            
+
             sign = 1.0 if side == 'BUY' else -1.0
-            
+
             if symbol in self.positions:
                 prev_pos = self.positions[symbol]
                 new_pos = prev_pos + (qty * sign)
-                
+                pnl = 0.0
+
                 # Realized PnL Calculation
                 if (prev_pos > 0 and side == 'SELL') or (prev_pos < 0 and side == 'BUY'):
                     # Reducing position
@@ -450,7 +524,7 @@ class PortfolioManager:
                     entry_price = self.avg_entry_prices[symbol]
                     pnl = (price - entry_price) * closed_qty * (1.0 if prev_pos > 0 else -1.0)
                     self.realized_pnl += pnl
-                    
+
                     # If position flipped, update avg entry for the remaining qty
                     if (prev_pos > 0 and new_pos < 0) or (prev_pos < 0 and new_pos > 0):
                         self.avg_entry_prices[symbol] = price
@@ -458,23 +532,29 @@ class PortfolioManager:
                     # Increasing position
                     total_cost = (abs(prev_pos) * self.avg_entry_prices[symbol]) + (qty * price)
                     self.avg_entry_prices[symbol] = total_cost / abs(new_pos) if new_pos != 0 else 0.0
-                    
+
                 if abs(new_pos) < 1e-8:
                     new_pos = 0.0
                     self.avg_entry_prices[symbol] = 0.0
-                    
+
                 self.positions[symbol] = new_pos
+                # Fees are applied exactly once here (replay marks is_maker; engine applies rate)
                 self.cash -= (qty * price * sign) + fee
                 self.total_fees_paid += fee
-                
+
+                # Accept both timestamp alias forms
+                ts = payload.get('transaction_time',
+                                 payload.get('transactionTime',
+                                             payload.get('timestamp', 0)))
                 trade_record = {
-                    'timestamp': payload.get('transaction_time', payload.get('timestamp', 0)),
+                    'timestamp': ts,
                     'symbol': symbol,
                     'side': side.lower(),
                     'qty': qty,
                     'price': price,
                     'fee': fee,
-                    'realized_pnl': pnl if ((prev_pos > 0 and side == 'SELL') or (prev_pos < 0 and side == 'BUY')) else 0.0
+                    'is_maker': is_maker,
+                    'realized_pnl': pnl,
                 }
                 self.recent_trades.append(trade_record)
                 if len(self.recent_trades) > 100:
@@ -528,6 +608,8 @@ class ExecutionManager:
         self.feature_bid = 0.0
         self.feature_ask = 0.0
         self.maker_filled_qty = 0.0
+        self.position_entry_ts = 0
+        self.half_life_ms = 3600000.0  # default 1 hour
         
         self.base_size = 0.1 # Trade size for the target asset
         self.maker_timeout_ms = 5000  # Dynamic based on regime
@@ -549,7 +631,10 @@ class ExecutionManager:
             self.base_size = min(0.5, self.base_size * 1.1)
             
         hl_mins = payload.get('half_life', 50.0)
-        hl_ticks = hl_mins * 60.0
+        if hl_mins <= 0:
+            hl_mins = 50.0
+        hl_ticks = float(hl_mins) * 60.0
+        self.half_life_ms = hl_ticks * 1000.0
         # Faster mean reversion (lower half_life) -> tighter timeout
         # e.g., if hl_ticks=10 ticks, timeout=2000ms. If hl_ticks=100, timeout=10000ms
         self.maker_timeout_ms = max(1000, min(15000, int(hl_ticks * 200)))
@@ -593,7 +678,7 @@ class ExecutionManager:
                 
             elif self.state == 'HEDGED':
                 # Aggressive Limit exit both legs immediately
-                self.state = 'IDLE'
+                self.state = 'CLOSING'
                 
                 target_pos = self.portfolio.positions[self.target]
                 feature_pos = self.portfolio.positions[self.feature]
@@ -622,6 +707,44 @@ class ExecutionManager:
                         'type': 'LIMIT',
                         'price': price,
                         'qty': abs(feature_pos)
+                    })
+                    
+        elif direction == 'EMERGENCY_CLOSE_SPREAD':
+            if self.state in ('LEGGING_MAKER_ENTRY', 'HEDGED'):
+                if self.state == 'LEGGING_MAKER_ENTRY':
+                    self.bus.publish('OUTBOUND_INTENT', {
+                        'action': 'CANCEL_ORDER',
+                        'order_id': self.active_maker_order_id,
+                        'symbol': self.target
+                    })
+                self.state = 'CLOSING'
+                self.active_maker_order_id = None
+                self.pending_leg2 = None
+                
+                target_pos = self.portfolio.positions[self.target]
+                feature_pos = self.portfolio.positions[self.feature]
+                
+                if abs(target_pos) > 1e-8:
+                    side = 'SELL' if target_pos > 0 else 'BUY'
+                    self.bus.publish('OUTBOUND_INTENT', {
+                        'action': 'PLACE_ORDER',
+                        'order_id': str(uuid.uuid4()),
+                        'symbol': self.target,
+                        'side': side,
+                        'type': 'MARKET',
+                        'qty': abs(target_pos),
+                        'price': 0
+                    })
+                if abs(feature_pos) > 1e-8:
+                    side = 'SELL' if feature_pos > 0 else 'BUY'
+                    self.bus.publish('OUTBOUND_INTENT', {
+                        'action': 'PLACE_ORDER',
+                        'order_id': str(uuid.uuid4()),
+                        'symbol': self.feature,
+                        'side': side,
+                        'type': 'MARKET',
+                        'qty': abs(feature_pos),
+                        'price': 0
                     })
 
     def _enter_spread(self, target_side: str):
@@ -683,6 +806,13 @@ class ExecutionManager:
                 self.pending_leg2 = None
                 self.maker_order_ts = 0
 
+        # Time-Stop: Check if we've held the position drastically longer than the mean-reversion expected time
+        if self.state == 'HEDGED' and self.position_entry_ts > 0:
+            hold_time_ms = ts - self.position_entry_ts
+            if hold_time_ms > 2.0 * self.half_life_ms:
+                # We've held 2x the cointegration half-life without converging -> Emergency exit
+                self.bus.publish('SIGNAL_GENERATED', {'direction': 'EMERGENCY_CLOSE_SPREAD'})
+
     def _on_order_update(self, payload: dict):
         status = payload.get('status')
         order_id = payload.get('order_id')
@@ -710,7 +840,9 @@ class ExecutionManager:
                 })
                 
             if status == 'FILLED':
+                # Leg2 filled completely, we are fully hedged now
                 self.state = 'HEDGED'
+                self.position_entry_ts = float(payload.get('timestamp', 0))
                 self.active_maker_order_id = None
                 self.pending_leg2_template = None
                 self.maker_order_ts = 0
@@ -722,6 +854,14 @@ class ExecutionManager:
                 self.pending_leg2_template = None
                 self.maker_order_ts = 0
                 self.maker_filled_qty = 0.0
+
+        # If CLOSING, stay in CLOSING until positions reach zero (monitored by PortfolioManager)
+        # We can loosely reset the state to IDLE if both positions hit zero.
+        if self.state == 'CLOSING':
+            target_pos = self.portfolio.positions.get(self.target, 0.0)
+            feature_pos = self.portfolio.positions.get(self.feature, 0.0)
+            if abs(target_pos) < 1e-8 and abs(feature_pos) < 1e-8:
+                self.state = 'IDLE'
 
 # ==========================================
 # 6. ENGINE ENTRY POINT
@@ -802,7 +942,11 @@ class TradingEngine:
                 
             elif ev_type == 'EXECUTION_REPORT':
                 self.bus.publish('ORDER_UPDATE', data)
-                
+
+            elif ev_type == 'FUNDING_RATE_UPDATE':
+                # Route funding events to all subscribers (PortfolioManager, SignalGenerator)
+                self.bus.publish('FUNDING_RATE_UPDATE', data)
+
             elif ev_type == 'REGIME_DATA':
                 self.bus.publish_async('ANALYTICS_REQUEST', data)
 
@@ -829,10 +973,12 @@ class TradingEngine:
             'capital': self.portfolio.cash,
             'realized_pnl': getattr(self.portfolio, 'realized_pnl', 0.0),
             'unrealized_pnl': self.portfolio.get_unrealized_pnl(
-                self.model.target_bid, self.model.target_ask, 
+                self.model.target_bid, self.model.target_ask,
                 self.model.feature_bid, self.model.feature_ask
             ) if hasattr(self.portfolio, 'get_unrealized_pnl') else 0.0,
             'total_fees_paid': getattr(self.portfolio, 'total_fees_paid', 0.0),
+            'total_funding_paid': getattr(self.portfolio, 'total_funding_paid', 0.0),
+            'dynamic_hurdle_bps': getattr(self.signal_generator, 'last_dynamic_hurdle_bps', 0.0),
             'positions': self.portfolio.positions,
             'target_position': self.portfolio.positions.get(self.target, 0.0),
             'feature_position': self.portfolio.positions.get(self.feature, 0.0),
