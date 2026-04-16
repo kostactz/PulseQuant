@@ -979,11 +979,12 @@ if __name__ == "__main__":
                 except Exception as e:
                     print(f"Process crashed for {t1} vs {t2}: {e}")
                 
-        print(f"\n{'Target':<10} | {'Feature':<10} | {'Hurst (Stat)':<12} | {'ADF P-Val':<10} | {'Half-life'}")
-        print("-" * 65)
+        print(f"\n{'Target':<10} | {'Feature':<10} | {'Hurst (Stat)':<12} | {'ADF P-Val':<10} | {'Half-life':<10} | {'Spread bps (±1σ)'}")
+        print("-" * 90)
         for res in results:
             c_color = GREEN if res['cointegrated'] else RED
-            print(color_text(f"{res['target']:<10} | {res['feature']:<10} | {res['hurst_stat']:<12.4f} | {res['p_value']:<10.6f} | {res['half_life_readable']}", c_color))
+            spread_str = f"{res['avg_abs_spread']:.1f} (±{res['std_abs_spread']:.1f})"
+            print(color_text(f"{res['target']:<10} | {res['feature']:<10} | {res['hurst_stat']:<12.4f} | {res['p_value']:<10.6f} | {res['half_life_readable']:<10} | {spread_str}", c_color))
             
         if results:
             import matplotlib.pyplot as plt
