@@ -701,6 +701,8 @@ if args.backtest:
     pos = 0  # 1 for Long Spread, -1 for Short Spread, 0 for Flat
     trades = 0
 
+    active_trade = None
+
     for i in range(1, n):
         # Calculate PnL accurately mapping to Price-Beta Cointegration
         ret_target = np.log(targets[i] / targets[i-1]) if targets[i-1] > 0 and targets[i] > 0 else 0.0
@@ -731,12 +733,55 @@ if args.backtest:
 
         # Fee Logic - Exact percentage allocation of capital
         turnover = abs(pos - prev_pos)
+        fee = 0.0
         if turnover > 0:
-            # We pay taker fee on both legs proportionally across the total capital allocated to the spread
-            fee = turnover * taker_pct
+            if prev_pos == 0 and pos != 0:
+                # Entry (Maker)
+                fee = maker_pct
+                if args.verbose:
+                    active_trade = {
+                        'entry_time': bt_df.index[i-1],
+                        'side': 'LONG' if pos == 1 else 'SHORT',
+                        'entry_target': targets[i-1],
+                        'entry_feature': features[i-1],
+                        'entry_spread': z[i-1],
+                        'entry_fee': fee,
+                        'cum_gross': 0.0
+                    }
+            elif prev_pos != 0 and pos == 0:
+                # Exit (Taker)
+                fee = taker_pct
+                if args.verbose and active_trade:
+                    total_fee = active_trade['entry_fee'] + fee
+                    trade_gross = active_trade['cum_gross']
+                    trade_net = trade_gross - total_fee
+                    print(f"[Verbose] Trade Closed [{active_trade['side']}]: Entry {active_trade['entry_time']} Target={active_trade['entry_target']:.4f} Feature={active_trade['entry_feature']:.4f} Spread Z={active_trade['entry_spread']:.2f} | Exit {bt_df.index[i-1]} Target={targets[i-1]:.4f} Feature={features[i-1]:.4f} Spread Z={z[i-1]:.2f} | Fees: {total_fee:.4%} | Gross: {trade_gross:.4%} | Net: {trade_net:.4%}")
+                    active_trade = None
+            elif prev_pos != 0 and pos != 0 and prev_pos != pos:
+                # Flip: Exit current (Taker) and Entry new (Maker)
+                fee = taker_pct + maker_pct
+                if args.verbose and active_trade:
+                    total_fee = active_trade['entry_fee'] + taker_pct
+                    trade_gross = active_trade['cum_gross']
+                    trade_net = trade_gross - total_fee
+                    print(f"[Verbose] Trade Closed [{active_trade['side']}]: Entry {active_trade['entry_time']} Target={active_trade['entry_target']:.4f} Feature={active_trade['entry_feature']:.4f} Spread Z={active_trade['entry_spread']:.2f} | Exit {bt_df.index[i-1]} Target={targets[i-1]:.4f} Feature={features[i-1]:.4f} Spread Z={z[i-1]:.2f} | Fees: {total_fee:.4%} | Gross: {trade_gross:.4%} | Net: {trade_net:.4%}")
+                    
+                    active_trade = {
+                        'entry_time': bt_df.index[i-1],
+                        'side': 'LONG' if pos == 1 else 'SHORT',
+                        'entry_target': targets[i-1],
+                        'entry_feature': features[i-1],
+                        'entry_spread': z[i-1],
+                        'entry_fee': maker_pct,
+                        'cum_gross': 0.0
+                    }
+
             period_net_return -= fee
             trades += turnover
             
+        if active_trade:
+            active_trade['cum_gross'] += gross_returns[i]
+
         net_returns[i] = period_net_return
 
     bt_df['Gross_Return'] = gross_returns
@@ -780,16 +825,19 @@ if args.backtest:
     ax_bt.grid(True, alpha=0.3)
 
     if not bt_df.empty:
-        # Calculate diff to find where positions change
-        bt_df['Pos_Diff'] = bt_df['Position'].diff()
+        # Align the logical entry diff with the trigger timestamp (t-1)
+        # Position at t represents the holding state arriving at t from t-1.
+        # Thus, a change at t means the trade was executed exactly at the close of t-1.
+        bt_df['Pos_Diff'] = bt_df['Position'].diff().shift(-1)
+        bt_df['Next_Pos'] = bt_df['Position'].shift(-1)
 
         # Entry points
-        long_entries = bt_df[(bt_df['Pos_Diff'] > 0) & (bt_df['Position'] == 1)]
-        short_entries = bt_df[(bt_df['Pos_Diff'] < 0) & (bt_df['Position'] == -1)]
+        long_entries = bt_df[(bt_df['Pos_Diff'] > 0) & (bt_df['Next_Pos'] == 1)]
+        short_entries = bt_df[(bt_df['Pos_Diff'] < 0) & (bt_df['Next_Pos'] == -1)]
         
         # Exit points (closing a long or a short)
-        close_longs = bt_df[(bt_df['Pos_Diff'] < 0) & (bt_df['Position'] == 0)]
-        close_shorts = bt_df[(bt_df['Pos_Diff'] > 0) & (bt_df['Position'] == 0)]
+        close_longs = bt_df[(bt_df['Pos_Diff'] < 0) & (bt_df['Next_Pos'] == 0)]
+        close_shorts = bt_df[(bt_df['Pos_Diff'] > 0) & (bt_df['Next_Pos'] == 0)]
 
         ax_trades = fig_bt.add_subplot(2, 1, 2)
 
@@ -817,7 +865,8 @@ if args.backtest:
         ax_trades.axhline(0, color='blue', alpha=0.3)
 
         ax_trades.set_title('Out-of-Sample Trade Executions mapped to Normalized Spread (bps)')
-        ax_trades.set_ylabel('Spread (bps)')
+        ax_trades.set_ylabel('Spread (bps) [Symlog]')
+        ax_trades.set_yscale('symlog', linthresh=10.0)
         ax_trades.set_xlabel('Datetime')
         ax_trades.legend(loc='upper right')
         ax_trades.grid(True, alpha=0.3)
