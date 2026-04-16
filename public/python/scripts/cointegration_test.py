@@ -917,9 +917,9 @@ def analyze_pair(target_ticker, feature_ticker, target_df, feature_df, batch_mod
         plt.close(fig_bt)
         _print(f"Saved plot: {output_bt_path}")
     
-    z_scores = train_eval_df['Z_Score'].dropna().values
-    avg_abs_z = float(np.mean(np.abs(z_scores))) if len(z_scores) else 0.0
-    std_abs_z = float(np.std(np.abs(z_scores))) if len(z_scores) else 0.0
+    spread_bps = train_eval_df['Dynamic_Spread'].dropna().values * 10000
+    avg_abs_spread = float(np.mean(np.abs(spread_bps))) if len(spread_bps) else 0.0
+    std_abs_spread = float(np.std(np.abs(spread_bps))) if len(spread_bps) else 0.0
 
     return {
         'target': target_ticker,
@@ -930,8 +930,8 @@ def analyze_pair(target_ticker, feature_ticker, target_df, feature_df, batch_mod
         'half_life': half_life_seconds,
         'half_life_readable': half_life_readable,
         'cointegrated': is_cointegrated,
-        'avg_abs_z': avg_abs_z,
-        'std_abs_z': std_abs_z
+        'avg_abs_spread': avg_abs_spread,
+        'std_abs_spread': std_abs_spread
     }
 
 
@@ -984,10 +984,10 @@ if __name__ == "__main__":
             import matplotlib.pyplot as plt
             import numpy as np
             
-            results.sort(key=lambda x: x['avg_abs_z'])
+            results.sort(key=lambda x: x['avg_abs_spread'])
             labels = [f"{r['target']} / {r['feature']}" for r in results]
-            means = [r['avg_abs_z'] for r in results]
-            stds = [r['std_abs_z'] for r in results]
+            means = [r['avg_abs_spread'] for r in results]
+            stds = [r['std_abs_spread'] for r in results]
             
             # Professional monochrome styling
             plt.style.use('default')
@@ -1007,16 +1007,26 @@ if __name__ == "__main__":
             
             ax.set_yticks(y_pos)
             ax.set_yticklabels(labels)
-            ax.set_xlabel('Average Absolute Z-Score ± 1 Standard Deviation')
-            ax.set_title('Batch Cointegration Analysis: Divergence Range Across Pairs')
+            ax.set_xlabel('Average Absolute Spread (Basis Points) ± 1 Std Dev')
+            ax.set_title('Batch Cointegration Analysis: Absolute Spread Magnitude (bps)')
             ax.grid(True, alpha=0.3, axis='x')
             ax.axvline(0, color='black', linewidth=1, alpha=0.5)
+            ax.axvline(20, color='#880000', linestyle='--', linewidth=1, alpha=0.7, label='Trade Fee Threshold (20 bps)')
+            ax.legend(loc='lower right', frameon=False)
+            ax.axvline(20, color='#880000', linestyle='--', linewidth=1, alpha=0.7, label='Trade Fee Threshold (20 bps)')
+            ax.legend(loc='lower right', frameon=False)
+            ax.axvline(20, color='#880000', linestyle='--', linewidth=1, alpha=0.7, label='Trade Fee Threshold (20 bps)')
+            ax.legend(loc='lower right', frameon=False)
+            ax.axvline(20, color='#880000', linestyle='--', linewidth=1, alpha=0.7, label='Trade Fee Threshold (20 bps)')
+            ax.legend(loc='lower right', frameon=False)
+            ax.axvline(20, color='#880000', linestyle='--', linewidth=1, alpha=0.7, label='Trade Fee Threshold (20 bps)')
+            ax.legend(loc='lower right', frameon=False)
             
             if len(means) > 0:
                 ax.set_xlim(left=0, right=max([m + s for m, s in zip(means, stds)]) * 1.1)
             
             plt.tight_layout()
-            out_path = 'batch_zscore_analysis.png'
+            out_path = 'batch_spread_analysis.png'
             fig.savefig(out_path, dpi=150, bbox_inches='tight')
             plt.close(fig)
             print(f"\nSaved divergence comparison plot to: {out_path}")
