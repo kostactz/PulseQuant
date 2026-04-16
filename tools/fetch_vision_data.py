@@ -158,6 +158,7 @@ def main():
     for symbol in args.symbols:
         for single_date in daterange(start_date, end_date):
             date_str = single_date.strftime("%Y-%m-%d")
+            month_str = single_date.strftime("%Y-%m")
             
             # bookTicker Daily
             bt_url = f"https://data.binance.vision/data/futures/um/daily/bookTicker/{symbol}/{symbol}-bookTicker-{date_str}.zip"
@@ -167,6 +168,23 @@ def main():
                 print(f"Parsing {bt_cache_path}...")
                 bt_events = parse_book_ticker_file(bt_cache_path, symbol)
                 all_events.extend(bt_events)
+            else:
+                # Try monthly bookTicker if daily 404s
+                bt_url_m = f"https://data.binance.vision/data/futures/um/monthly/bookTicker/{symbol}/{symbol}-bookTicker-{month_str}.zip"
+                bt_cache_path_m = cache_dir / f"{symbol}-bookTicker-{month_str}.csv"
+                if download_and_extract(bt_url_m, bt_cache_path_m):
+                    print(f"Parsing {bt_cache_path_m}...")
+                    bt_events_all = parse_book_ticker_file(bt_cache_path_m, symbol)
+                    # Filter to this date
+                    filtered_bt = []
+                    for ev in bt_events_all:
+                        ev_date = datetime.datetime.fromtimestamp(
+                            ev['data']['timestamp'] / 1000.0,
+                            tz=datetime.timezone.utc,
+                        ).date()
+                        if ev_date == single_date:
+                            filtered_bt.append(ev)
+                    all_events.extend(filtered_bt)
 
             # Note: fundingRate is often monthly in vision, sometimes daily. Let's try daily first.
             fr_url = f"https://data.binance.vision/data/futures/um/daily/fundingRate/{symbol}/{symbol}-fundingRate-{date_str}.zip"
@@ -178,20 +196,21 @@ def main():
                 all_events.extend(fr_events)
             else:
                 # Try monthly if daily 404s
-                month_str = single_date.strftime("%Y-%m")
                 fr_url_m = f"https://data.binance.vision/data/futures/um/monthly/fundingRate/{symbol}/{symbol}-fundingRate-{month_str}.zip"
                 fr_cache_path_m = cache_dir / f"{symbol}-fundingRate-{month_str}.csv"
                 if download_and_extract(fr_url_m, fr_cache_path_m):
                     print(f"Parsing {fr_cache_path_m}...")
                     fr_events_all = parse_funding_rate_file(fr_cache_path_m, symbol)
                     # Filter to this date
+                    filtered_fr = []
                     for ev in fr_events_all:
                         ev_date = datetime.datetime.fromtimestamp(
                             ev['data']['timestamp'] / 1000.0,
                             tz=datetime.timezone.utc,
                         ).date()
                         if ev_date == single_date:
-                            all_events.append(ev)
+                            filtered_fr.append(ev)
+                    all_events.extend(filtered_fr)
 
     print(f"Sorting {len(all_events)} events...")
     all_events.sort(key=lambda x: x['data']['timestamp'])
