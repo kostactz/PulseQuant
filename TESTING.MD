@@ -70,3 +70,11 @@ Replay helper & Mock Data
 - `tools/generate_mock_data.py` builds correlated synthetic Target and Feature tick pairs. You can customize the spread volatility using the CLI.
 - Input file format adheres to the `NormalizedTick` shape found in `lib/market-data/types.ts`.
 
+Realistic Backtester Integration
+--------------------------------
+- Phase 2 introduced a high-fidelity continuous integration pipeline covering exact cost accounting and event routing.
+- **`test_pipeline.sh`**: The master CI bash script for the orchestration layer. By default, it runs offline Python unit tests enforcing 10bps slippage bounds and Limit queue trade-through conditions.
+  - Quick run (fast unit tests): `./test_pipeline.sh`
+  - Integration mode: `RUN_INTEGRATION=1 ./test_pipeline.sh` (Downloads >1.5M ticks natively from Binance Vision for a target date, interleaves funding streams into a `.jsonl`, and validates realistic simulated hedging).
+- **`test/test_replay_engine.py`**: A suite of `pytest` functions executing purely over the Python sub-process layer. These validate exchange-style event bus mechanisms (e.g., Maker Limits strict inequality fills, slippage precision, portfolio cash deductions on funding, and `is_maker` flags).
+
