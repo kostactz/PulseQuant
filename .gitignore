@@ -59,3 +59,4 @@ reports/
 replay_report.json
 *.parquet
 *report.png
+test/resources/cache/*.csv
