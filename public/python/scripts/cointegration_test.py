@@ -594,6 +594,11 @@ def analyze_pair(target_ticker, feature_ticker, target_df, feature_df, batch_mod
     _print(f"-> Mean Reversion Half-Life: {half_life:.2f} periods (~{half_life_readable})")
     if half_life_seconds > 7200:
         _print(color_text("   !!! WARNING: Half-life exceeds 2 hours. Spread may not revert fast enough for medium-frequency strategies.", YELLOW))
+
+    _spread_bps_calc = train_eval_df['Dynamic_Spread'].dropna().values * 10000
+    tmp_avg_abs_spread = float(np.mean(np.abs(_spread_bps_calc))) if len(_spread_bps_calc) else 0.0
+    tmp_std_abs_spread = float(np.std(np.abs(_spread_bps_calc))) if len(_spread_bps_calc) else 0.0
+    _print(f"-> Average Absolute Spread: {tmp_avg_abs_spread:.2f} bps (±{tmp_std_abs_spread:.2f} bps)")
     
     # ==============================================================================
     # 7. FINAL VERDICT & VISUALIZATION
@@ -1011,15 +1016,7 @@ if __name__ == "__main__":
             ax.set_title('Batch Cointegration Analysis: Absolute Spread Magnitude (bps)')
             ax.grid(True, alpha=0.3, axis='x')
             ax.axvline(0, color='black', linewidth=1, alpha=0.5)
-            ax.axvline(20, color='#880000', linestyle='--', linewidth=1, alpha=0.7, label='Trade Fee Threshold (20 bps)')
-            ax.legend(loc='lower right', frameon=False)
-            ax.axvline(20, color='#880000', linestyle='--', linewidth=1, alpha=0.7, label='Trade Fee Threshold (20 bps)')
-            ax.legend(loc='lower right', frameon=False)
-            ax.axvline(20, color='#880000', linestyle='--', linewidth=1, alpha=0.7, label='Trade Fee Threshold (20 bps)')
-            ax.legend(loc='lower right', frameon=False)
-            ax.axvline(20, color='#880000', linestyle='--', linewidth=1, alpha=0.7, label='Trade Fee Threshold (20 bps)')
-            ax.legend(loc='lower right', frameon=False)
-            ax.axvline(20, color='#880000', linestyle='--', linewidth=1, alpha=0.7, label='Trade Fee Threshold (20 bps)')
+            ax.axvline(50, color='#880000', linestyle='--', linewidth=1, alpha=0.7, label='Trade Fee Threshold (50 bps)')
             ax.legend(loc='lower right', frameon=False)
             
             if len(means) > 0:
