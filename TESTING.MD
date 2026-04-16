@@ -72,7 +72,7 @@ Replay helper & Mock Data
 
 Realistic Backtester Integration
 --------------------------------
-- Phase 2 introduced a high-fidelity continuous integration pipeline covering exact cost accounting and event routing.
+- A high-fidelity continuous integration pipeline was introduced, covering cost accounting and event routing.
 - **`test_pipeline.sh`**: The master CI bash script for the orchestration layer. By default, it runs offline Python unit tests enforcing 10bps slippage bounds and Limit queue trade-through conditions.
   - Quick run (fast unit tests): `./test_pipeline.sh`
   - Integration mode: `RUN_INTEGRATION=1 ./test_pipeline.sh` (Downloads >1.5M ticks natively from Binance Vision for a target date, interleaves funding streams into a `.jsonl`, and validates realistic simulated hedging).
