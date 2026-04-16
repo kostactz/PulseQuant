@@ -432,9 +432,17 @@ class BackgroundAnalyticsWorker:
             
             is_toxic = not (is_coint and is_hl_valid and (hurst < 0.5))
             
+            # Clean floating point infinites before sending to Pyodide
+            if np.isinf(half_life_periods) or np.isnan(half_life_periods):
+                half_life_periods = 99999.0
+            if np.isinf(p_value) or np.isnan(p_value):
+                p_value = 1.0
+            if np.isinf(hurst) or np.isnan(hurst):
+                hurst = 1.0
+            
             # Publish back to the main event bus
             self.bus.publish('REGIME_CHANGE', {
-                'toxic': is_toxic,
+                'toxic': bool(is_toxic),
                 'adf_pvalue': float(p_value),
                 'half_life': float(half_life_periods),
                 'hurst': float(hurst)
