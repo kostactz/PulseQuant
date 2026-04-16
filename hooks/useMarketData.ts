@@ -7,7 +7,7 @@ import { OrderManager, Intent } from '@/lib/order/OrderManager';
 
 export type TradingMode = 'PAPER' | 'TESTNET' | 'MAINNET';
 
-export function useMarketData(connectEnabled: boolean = true, tradingMode: TradingMode = 'PAPER', onTickImmediate?: (tick: NormalizedTick) => void, onExecutionReportImmediate?: (report: any) => void, onSyncStateImmediate?: (state: any) => void) {
+export function useMarketData(connectEnabled: boolean = true, tradingMode: TradingMode = 'PAPER', onTickImmediate?: (tick: NormalizedTick) => void, onExecutionReportImmediate?: (report: any) => void, onSyncStateImmediate?: (state: any) => void, onFundingRateImmediate?: (event: any) => void) {
   const [orderBooks, setOrderBooks] = useState<Record<string, { bids: [number, number][], asks: [number, number][] }>>({});
   const [latestTicks, setLatestTicks] = useState<Record<string, NormalizedTick>>({});
   const buffer = useRef<NormalizedTick[]>([]);
@@ -20,6 +20,7 @@ export function useMarketData(connectEnabled: boolean = true, tradingMode: Tradi
   const onTickImmediateRef = useRef(onTickImmediate);
   const onExecutionReportImmediateRef = useRef(onExecutionReportImmediate);
   const onSyncStateImmediateRef = useRef(onSyncStateImmediate);
+  const onFundingRateImmediateRef = useRef(onFundingRateImmediate);
   const tradingModeRef = useRef(tradingMode);
   
   // 1. Connection Setup and State Management
@@ -31,8 +32,9 @@ export function useMarketData(connectEnabled: boolean = true, tradingMode: Tradi
     onTickImmediateRef.current = onTickImmediate; 
     onExecutionReportImmediateRef.current = onExecutionReportImmediate; 
     onSyncStateImmediateRef.current = onSyncStateImmediate;
+    onFundingRateImmediateRef.current = onFundingRateImmediate;
     tradingModeRef.current = tradingMode;
-  }, [onTickImmediate, onExecutionReportImmediate, onSyncStateImmediate, tradingMode]);
+  }, [onTickImmediate, onExecutionReportImmediate, onSyncStateImmediate, onFundingRateImmediate, tradingMode]);
 
   const adapterRef = useRef<MarketDataAdapter | null>(null);
   const orderManagerRef = useRef<OrderManager | null>(null);
@@ -68,6 +70,14 @@ export function useMarketData(connectEnabled: boolean = true, tradingMode: Tradi
         adapterRef.current.onSyncState((state) => {
           if (onSyncStateImmediateRef.current) {
             onSyncStateImmediateRef.current(state);
+          }
+        });
+      }
+
+      if ((adapterRef.current as any).onMarkPriceUpdate) {
+        (adapterRef.current as any).onMarkPriceUpdate((fundingData: any) => {
+          if (onFundingRateImmediateRef.current) {
+            onFundingRateImmediateRef.current({ type: 'FUNDING_RATE_UPDATE', data: fundingData });
           }
         });
       }

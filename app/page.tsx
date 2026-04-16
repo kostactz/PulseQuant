@@ -7,7 +7,7 @@ import { SecuritySetupModal } from '@/components/SecuritySetupModal';
 import { RealtimeChart } from '@/components/RealtimeChart';
 import { OrderBookDepth } from '@/components/OrderBookDepth';
 import { TradesList } from '@/components/TradesList';
-import { Maximize, Activity, TrendingUp, DollarSign, Play, Pause, Trash2, Settings2, RefreshCw, Briefcase, ArrowUpRight, ArrowDownRight, Bot, Code, X, Video, Zap, Lock } from 'lucide-react';
+import { Maximize, Activity, TrendingUp, TrendingDown, DollarSign, Play, Pause, Trash2, Settings2, RefreshCw, Briefcase, ArrowUpRight, ArrowDownRight, Bot, Code, X, Video, Zap, Lock, AlertTriangle, CheckCircle } from 'lucide-react';
 import { clearRuntimeCredentials, clearCredentials, getRuntimeCredentials } from '@/lib/security/credentials';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 
@@ -63,6 +63,11 @@ export default function Dashboard() {
       if (isReady && isUnlocked) {
         processBatch([{ type: 'SYNC_STATE', data: state }]);
       }
+    },
+    (fundingEvent) => {
+      if (isReady && isUnlocked) {
+        processBatch([fundingEvent]);
+      }
     }
   );
   
@@ -95,12 +100,12 @@ export default function Dashboard() {
   const [showCodeModal, setShowCodeModal] = useState(false);
   const [engineCode, setEngineCode] = useState('');
 
-  const [targetAsset, setTargetAsset] = useState('BTCUSDT');
-  const [featureAsset, setFeatureAsset] = useState('ETHUSDT');
+  const [targetAsset, setTargetAsset] = useState('ORDIUSDC');
+  const [featureAsset, setFeatureAsset] = useState('SUIUSDC');
   const [isFetchingHistory, setIsFetchingHistory] = useState(false);
   const [analysisPair, setAnalysisPair] = useState<string | null>(null);
 
-  const AVAILABLE_ASSETS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'ADAUSDT', 'XRPUSDT', 'BNBUSDT'];
+  const AVAILABLE_ASSETS = ['ORDIUSDC', 'SUIUSDC', 'ETHUSDT', 'BTCUSDT'];
 
   const handleRunAnalysis = useCallback(async () => {
     setIsFetchingHistory(true);
@@ -697,7 +702,177 @@ export default function Dashboard() {
               </div>
             </div>
 
-            {/* Trading Analytics - Simplified for now, or adapt as needed */}
+            {/* === Death Spiral Cost Accounting === */}
+            {(() => {
+              const grossPnl = (currentState.realized_pnl ?? 0);
+              const totalFees = (currentState.total_fees_paid ?? 0);
+              const totalFunding = (currentState.total_funding_paid ?? 0);
+              const netPnl = grossPnl - totalFees - totalFunding;
+              const dynamicHurdleBps = (currentState.dynamic_hurdle_bps ?? 0);
+              const currentSpreadBps = Math.abs((currentState.spread_metrics?.current_spread ?? 0)) * 10000;
+              const isBlocked = dynamicHurdleBps >= currentSpreadBps || currentSpreadBps < 0.001;
+              const maxBar = Math.max(dynamicHurdleBps, currentSpreadBps, 1);
+              return (
+                <div className="space-y-3">
+                  {/* Row 1: PnL breakdown */}
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    {/* Gross PnL */}
+                    <div className="bg-white border border-gray-200 shadow-sm p-4 rounded-xl flex items-center gap-3">
+                      <div className="p-2.5 bg-blue-100 text-blue-600 rounded-lg shrink-0">
+                        <TrendingUp className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <p className="text-xs text-gray-400 uppercase tracking-wider font-semibold">Gross PnL</p>
+                        <p className={`text-lg font-bold font-mono ${
+                          grossPnl > 0 ? 'text-emerald-600' : grossPnl < 0 ? 'text-red-600' : 'text-gray-700'
+                        }`}>
+                          {grossPnl >= 0 ? '+' : ''}{grossPnl.toFixed(2)}
+                        </p>
+                        <p className="text-xs text-gray-400">Before costs</p>
+                      </div>
+                    </div>
+
+                    {/* Net PnL */}
+                    <div className={`border shadow-sm p-4 rounded-xl flex items-center gap-3 ${
+                      netPnl < -50 ? 'bg-red-50 border-red-300' :
+                      netPnl < 0 ? 'bg-orange-50 border-orange-200' :
+                      'bg-white border-gray-200'
+                    }`}>
+                      <div className={`p-2.5 rounded-lg shrink-0 ${
+                        netPnl < 0 ? 'bg-red-100 text-red-600' : 'bg-emerald-100 text-emerald-600'
+                      }`}>
+                        {netPnl < 0 ? <TrendingDown className="w-5 h-5" /> : <TrendingUp className="w-5 h-5" />}
+                      </div>
+                      <div>
+                        <p className="text-xs text-gray-400 uppercase tracking-wider font-semibold">Net PnL</p>
+                        <p className={`text-lg font-bold font-mono ${
+                          netPnl > 0 ? 'text-emerald-600' : 'text-red-600'
+                        }`}>
+                          {netPnl >= 0 ? '+' : ''}{netPnl.toFixed(2)}
+                        </p>
+                        <p className="text-xs text-gray-400">After fees & funding</p>
+                      </div>
+                    </div>
+
+                    {/* Total Fees */}
+                    <div className="bg-white border border-gray-200 shadow-sm p-4 rounded-xl flex items-center gap-3">
+                      <div className="p-2.5 bg-amber-100 text-amber-600 rounded-lg shrink-0">
+                        <DollarSign className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <p className="text-xs text-gray-400 uppercase tracking-wider font-semibold">Total Fees Paid</p>
+                        <p className="text-lg font-bold font-mono text-amber-600">
+                          -{totalFees.toFixed(4)}
+                        </p>
+                        <p className="text-xs text-gray-400">Maker/Taker</p>
+                      </div>
+                    </div>
+
+                    {/* Funding Paid */}
+                    <div className={`border shadow-sm p-4 rounded-xl flex items-center gap-3 ${
+                      totalFunding > 10 ? 'bg-red-50 border-red-200' : 'bg-white border-gray-200'
+                    }`}>
+                      <div className={`p-2.5 rounded-lg shrink-0 ${
+                        totalFunding > 0 ? 'bg-red-100 text-red-600' : 'bg-emerald-100 text-emerald-600'
+                      }`}>
+                        <DollarSign className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <p className="text-xs text-gray-400 uppercase tracking-wider font-semibold">Funding Paid</p>
+                        <p className={`text-lg font-bold font-mono ${
+                          totalFunding > 0 ? 'text-red-600' : totalFunding < 0 ? 'text-emerald-600' : 'text-gray-700'
+                        }`}>
+                          {totalFunding >= 0 ? '-' : '+'}{Math.abs(totalFunding).toFixed(4)}
+                        </p>
+                        <p className="text-xs text-gray-400">{totalFunding < 0 ? 'Earned (credit)' : 'Paid (debit)'}</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Row 2: Dynamic Hurdle vs Spread */}
+                  <div className={`border shadow-sm p-5 rounded-xl ${
+                    isBlocked ? 'bg-red-50 border-red-200' : 'bg-emerald-50 border-emerald-200'
+                  }`}>
+                    <div className="flex items-center justify-between mb-4">
+                      <div className="flex items-center gap-2">
+                        <div className={`p-1.5 rounded-lg ${
+                          isBlocked ? 'bg-red-100 text-red-600' : 'bg-emerald-100 text-emerald-600'
+                        }`}>
+                          {isBlocked ? <AlertTriangle className="w-4 h-4" /> : <CheckCircle className="w-4 h-4" />}
+                        </div>
+                        <h3 className="text-sm font-bold text-gray-800">Dynamic Hurdle vs Current Spread</h3>
+                        <span className={`text-xs font-bold px-2.5 py-1 rounded-full ${
+                          isBlocked
+                            ? 'bg-red-500 text-white'
+                            : 'bg-emerald-500 text-white'
+                        }`}>
+                          {isBlocked ? '⛔ BLOCKED' : '✅ CLEAR'}
+                        </span>
+                      </div>
+                      <p className="text-xs text-gray-500">
+                        {isBlocked
+                          ? 'Spread too thin to cover costs — engine will not trade'
+                          : 'Edge exceeds costs — engine may signal entry'}
+                      </p>
+                    </div>
+
+                    <div className="space-y-3">
+                      {/* Dynamic Hurdle bar */}
+                      <div>
+                        <div className="flex justify-between text-xs mb-1">
+                          <span className="font-semibold text-red-600 flex items-center gap-1">
+                            <AlertTriangle className="w-3 h-3" /> Dynamic Hurdle
+                          </span>
+                          <span className="font-mono font-bold text-red-600">{dynamicHurdleBps.toFixed(2)} bps</span>
+                        </div>
+                        <div className="h-4 bg-gray-100 rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-red-400 rounded-full transition-all duration-500"
+                            style={{ width: `${Math.min(100, (dynamicHurdleBps / maxBar) * 100)}%` }}
+                          />
+                        </div>
+                        <p className="text-xs text-gray-400 mt-0.5">Maker fee + taker fee + slippage + funding drag</p>
+                      </div>
+
+                      {/* Current spread bar */}
+                      <div>
+                        <div className="flex justify-between text-xs mb-1">
+                          <span className={`font-semibold flex items-center gap-1 ${
+                            isBlocked ? 'text-gray-500' : 'text-emerald-600'
+                          }`}>
+                            <Activity className="w-3 h-3" /> Current Spread
+                          </span>
+                          <span className={`font-mono font-bold ${
+                            isBlocked ? 'text-gray-500' : 'text-emerald-600'
+                          }`}>{currentSpreadBps.toFixed(2)} bps</span>
+                        </div>
+                        <div className="h-4 bg-gray-100 rounded-full overflow-hidden">
+                          <div
+                            className={`h-full rounded-full transition-all duration-500 ${
+                              isBlocked ? 'bg-gray-400' : 'bg-emerald-500'
+                            }`}
+                            style={{ width: `${Math.min(100, (currentSpreadBps / maxBar) * 100)}%` }}
+                          />
+                        </div>
+                        <p className="text-xs text-gray-400 mt-0.5">Available gross edge (before any costs)</p>
+                      </div>
+
+                      {/* Gap summary */}
+                      <div className={`mt-1 text-xs font-semibold text-right ${
+                        isBlocked ? 'text-red-600' : 'text-emerald-600'
+                      }`}>
+                        {isBlocked
+                          ? `Deficit: ${(dynamicHurdleBps - currentSpreadBps).toFixed(2)} bps needs to close before a trade triggers`
+                          : `Surplus: +${(currentSpreadBps - dynamicHurdleBps).toFixed(2)} bps above the hurdle`
+                        }
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* Trading Analytics */}
 
             <div className="bg-white border border-gray-200 shadow-sm p-5 rounded-xl h-[500px]">
 
