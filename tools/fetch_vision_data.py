@@ -14,13 +14,13 @@ from binance.client import Client
 client = Client()
 
 def fetch_binance_klines_as_ticks(symbol, start_date, end_date):
-    """Fallback: Fetch 1m klines from Binance API and simulate ticks."""
-    print(f"Fallback: Fetching 1m klines for {symbol} via Binance API from {start_date} to {end_date}...")
+    """Fallback: Fetch 1s klines from Binance API and simulate ticks."""
+    print(f"Fallback: Fetching 1s klines for {symbol} via Binance API from {start_date} to {end_date}...")
     
     start_ts = datetime.datetime.combine(start_date, datetime.time.min)
     end_ts = datetime.datetime.combine(end_date, datetime.time.max)
     
-    interval_seconds = 60
+    interval_seconds = 1
     chunk_seconds = 10000 * interval_seconds
     chunk_delta = datetime.timedelta(seconds=chunk_seconds)
     
@@ -38,7 +38,7 @@ def fetch_binance_klines_as_ticks(symbol, start_date, end_date):
     def fetch_chunk(s, e):
         return client.get_historical_klines(
             symbol,
-            '1m',
+            '1s',
             s.strftime("%d %b, %Y %H:%M:%S"),
             e.strftime("%d %b, %Y %H:%M:%S")
         )
@@ -128,7 +128,7 @@ def download_and_extract(url, cache_path):
         print(f"Error downloading {url}: {e}")
         return False
 
-def parse_book_ticker_file(filepath, symbol):
+def parse_book_ticker_file(filepath, symbol, filter_date=None):
     events = []
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
@@ -148,6 +148,15 @@ def parse_book_ticker_file(filepath, symbol):
             for row in reader:
                 if not row: continue
                 ts = int(row[idx_time])
+                
+                if filter_date:
+                    ev_date = datetime.datetime.fromtimestamp(
+                        ts / 1000.0,
+                        tz=datetime.timezone.utc,
+                    ).date()
+                    if ev_date != filter_date:
+                        continue
+
                 bid = float(row[idx_bid])
                 ask = float(row[idx_ask])
                 events.append({
@@ -163,7 +172,48 @@ def parse_book_ticker_file(filepath, symbol):
         print(f"Error parsing {filepath}: {e}")
     return events
 
-def parse_funding_rate_file(filepath, symbol):
+def parse_agg_trades_file(filepath, symbol, filter_date=None):
+    events = []
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            reader = csv.reader(f)
+            header = next(reader)
+            # Find indices
+            try:
+                idx_price = header.index("price")
+                idx_time = header.index("transact_time")
+            except ValueError:
+                idx_price = 1
+                idx_time = 5
+                
+            for row in reader:
+                if not row: continue
+                ts = int(row[idx_time])
+                
+                if filter_date:
+                    ev_date = datetime.datetime.fromtimestamp(
+                        ts / 1000.0,
+                        tz=datetime.timezone.utc,
+                    ).date()
+                    if ev_date != filter_date:
+                        continue
+
+                price = float(row[idx_price])
+                # We use the matched price for both bid and ask as proxy
+                events.append({
+                    'type': 'TICK',
+                    'data': {
+                        'symbol': symbol,
+                        'timestamp': ts,
+                        'bid': price,
+                        'ask': price
+                    }
+                })
+    except Exception as e:
+        print(f"Error parsing {filepath}: {e}")
+    return events
+
+def parse_funding_rate_file(filepath, symbol, filter_date=None):
     events = []
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
@@ -179,6 +229,15 @@ def parse_funding_rate_file(filepath, symbol):
             for row in reader:
                 if not row: continue
                 ts = int(row[idx_time])
+                
+                if filter_date:
+                    ev_date = datetime.datetime.fromtimestamp(
+                        ts / 1000.0,
+                        tz=datetime.timezone.utc,
+                    ).date()
+                    if ev_date != filter_date:
+                        continue
+
                 rate = float(row[idx_rate])
                 events.append({
                     'type': 'FUNDING_RATE_UPDATE',
@@ -192,6 +251,68 @@ def parse_funding_rate_file(filepath, symbol):
         print(f"Error parsing {filepath}: {e}")
     return events
 
+def get_vision_events(symbol, data_type, date_obj, missing_months, vision_lock, cache_dir):
+    """
+    data_type: 'bookTicker' or 'aggTrades' or 'fundingRate'
+    Returns a list of parsed events, or None if completely missing.
+    """
+    date_str = date_obj.strftime("%Y-%m-%d")
+    month_str = date_obj.strftime("%Y-%m")
+    
+    url = f"https://data.binance.vision/data/futures/um/daily/{data_type}/{symbol}/{symbol}-{data_type}-{date_str}.zip"
+    cache_path = cache_dir / f"{symbol}-{data_type}-{date_str}.csv"
+    
+    url_m = f"https://data.binance.vision/data/futures/um/monthly/{data_type}/{symbol}/{symbol}-{data_type}-{month_str}.zip"
+    cache_path_m = cache_dir / f"{symbol}-{data_type}-{month_str}.csv"
+
+    skip = False
+    use_monthly = False
+
+    with vision_lock:
+        if month_str in missing_months:
+            skip = True
+        elif cache_path_m.exists():
+            use_monthly = True
+
+    if skip:
+        return None
+
+    events = []
+    parser_func = {
+        'bookTicker': parse_book_ticker_file,
+        'aggTrades': parse_agg_trades_file,
+        'fundingRate': parse_funding_rate_file
+    }[data_type]
+
+    if use_monthly:
+        print(f"Using cached monthly {data_type} for {symbol} {month_str} on {date_str}...")
+        events = parser_func(cache_path_m, symbol, filter_date=date_obj)
+        return events
+
+    if download_and_extract(url, cache_path):
+        print(f"Parsing {cache_path}...")
+        return parser_func(cache_path, symbol)
+    else:
+        with vision_lock:
+            if month_str in missing_months:
+                skip = True
+            elif cache_path_m.exists():
+                use_monthly = True
+            else:
+                if download_and_extract(url_m, cache_path_m):
+                    use_monthly = True
+                else:
+                    print(f"Both daily and monthly {data_type} archives 404'd for {symbol} on {date_str}.")
+                    missing_months.add(month_str)
+                    skip = True
+        
+        if skip:
+            return None
+        if use_monthly:
+            print(f"Using cached monthly {data_type} for {symbol} {month_str} on {date_str}...")
+            events = parser_func(cache_path_m, symbol, filter_date=date_obj)
+            return events
+    return None
 def main():
     parser = argparse.ArgumentParser(
         description="Fetch Binance Vision Futures Data (bookTicker + fundingRate).",
@@ -228,144 +349,35 @@ def main():
     all_events = []
     events_lock = threading.Lock()
 
-    def process_symbol_date(symbol, single_date, missing_bt, missing_fr, vision_lock):
+    def process_symbol_date(symbol, single_date, missing_bt, missing_at, missing_fr, vision_lock):
         local_events = []
-        date_str = single_date.strftime("%Y-%m-%d")
-        month_str = single_date.strftime("%Y-%m")
         
-        # bookTicker Daily
-        bt_url = f"https://data.binance.vision/data/futures/um/daily/bookTicker/{symbol}/{symbol}-bookTicker-{date_str}.zip"
-        bt_cache_path = cache_dir / f"{symbol}-bookTicker-{date_str}.csv"
-        
-        # Try monthly bookTicker
-        bt_url_m = f"https://data.binance.vision/data/futures/um/monthly/bookTicker/{symbol}/{symbol}-bookTicker-{month_str}.zip"
-        bt_cache_path_m = cache_dir / f"{symbol}-bookTicker-{month_str}.csv"
-        
-        use_api = False
-        use_monthly_bt = False
-
-        with vision_lock:
-            if month_str in missing_bt:
-                use_api = True
-            elif bt_cache_path_m.exists():
-                use_monthly_bt = True
-
-        if use_api:
-            api_ticks = fetch_binance_klines_as_ticks(symbol, single_date, single_date)
-            local_events.extend(api_ticks)
-        elif use_monthly_bt:
-            print(f"Using cached monthly bookTicker for {symbol} {month_str} on {date_str}...")
-            bt_events_all = parse_book_ticker_file(bt_cache_path_m, symbol)
-            filtered_bt = []
-            for ev in bt_events_all:
-                ev_date = datetime.datetime.fromtimestamp(
-                    ev['data']['timestamp'] / 1000.0,
-                    tz=datetime.timezone.utc,
-                ).date()
-                if ev_date == single_date:
-                    filtered_bt.append(ev)
-            local_events.extend(filtered_bt)
+        # 1. Try bookTicker
+        bt_events = get_vision_events(symbol, 'bookTicker', single_date, missing_bt, vision_lock, cache_dir)
+        if bt_events is not None and len(bt_events) > 0:
+            local_events.extend(bt_events)
         else:
-            if download_and_extract(bt_url, bt_cache_path):
-                print(f"Parsing {bt_cache_path}...")
-                bt_events = parse_book_ticker_file(bt_cache_path, symbol)
-                local_events.extend(bt_events)
+            print(f"[{symbol} | {single_date}] bookTicker unavailable. Trying aggTrades...")
+            # 2. Try aggTrades
+            at_events = get_vision_events(symbol, 'aggTrades', single_date, missing_at, vision_lock, cache_dir)
+            if at_events is not None and len(at_events) > 0:
+                local_events.extend(at_events)
             else:
-                with vision_lock:
-                    if month_str in missing_bt:
-                        use_api = True
-                    elif bt_cache_path_m.exists():
-                        use_monthly_bt = True
-                    else:
-                        if download_and_extract(bt_url_m, bt_cache_path_m):
-                            use_monthly_bt = True
-                        else:
-                            print(f"Both daily and monthly vision archives 404'd for {symbol} on {date_str}.")
-                            missing_bt.add(month_str)
-                            use_api = True
-                
-                if use_api:
-                    api_ticks = fetch_binance_klines_as_ticks(symbol, single_date, single_date)
-                    local_events.extend(api_ticks)
-                elif use_monthly_bt:
-                    print(f"Using cached monthly bookTicker for {symbol} {month_str} on {date_str}...")
-                    bt_events_all = parse_book_ticker_file(bt_cache_path_m, symbol)
-                    filtered_bt = []
-                    for ev in bt_events_all:
-                        ev_date = datetime.datetime.fromtimestamp(
-                            ev['data']['timestamp'] / 1000.0,
-                            tz=datetime.timezone.utc,
-                        ).date()
-                        if ev_date == single_date:
-                            filtered_bt.append(ev)
-                    local_events.extend(filtered_bt)
+                print(f"[{symbol} | {single_date}] aggTrades unavailable. Falling back to Binance API (1s klines)...")
+                # 3. Fallback to Binance API 1s Klines
+                api_events = fetch_binance_klines_as_ticks(symbol, single_date, single_date)
+                local_events.extend(api_events)
 
-        # fundingRate Daily
-        fr_url = f"https://data.binance.vision/data/futures/um/daily/fundingRate/{symbol}/{symbol}-fundingRate-{date_str}.zip"
-        fr_cache_path = cache_dir / f"{symbol}-fundingRate-{date_str}.csv"
-        
-        # Try monthly fundingRate
-        fr_url_m = f"https://data.binance.vision/data/futures/um/monthly/fundingRate/{symbol}/{symbol}-fundingRate-{month_str}.zip"
-        fr_cache_path_m = cache_dir / f"{symbol}-fundingRate-{month_str}.csv"
-
-        skip_fr = False
-        use_monthly_fr = False
-
-        with vision_lock:
-            if month_str in missing_fr:
-                skip_fr = True
-            elif fr_cache_path_m.exists():
-                use_monthly_fr = True
-
-        if skip_fr:
-            pass 
-        elif use_monthly_fr:
-            print(f"Using cached monthly fundingRate for {symbol} {month_str} on {date_str}...")
-            fr_events_all = parse_funding_rate_file(fr_cache_path_m, symbol)
-            filtered_fr = []
-            for ev in fr_events_all:
-                ev_date = datetime.datetime.fromtimestamp(
-                    ev['data']['timestamp'] / 1000.0,
-                    tz=datetime.timezone.utc,
-                ).date()
-                if ev_date == single_date:
-                    filtered_fr.append(ev)
-            local_events.extend(filtered_fr)
-        else:
-            if download_and_extract(fr_url, fr_cache_path):
-                print(f"Parsing {fr_cache_path}...")
-                fr_events = parse_funding_rate_file(fr_cache_path, symbol)
-                local_events.extend(fr_events)
-            else:
-                with vision_lock:
-                    if month_str in missing_fr:
-                        skip_fr = True
-                    elif fr_cache_path_m.exists():
-                        use_monthly_fr = True
-                    else:
-                        if download_and_extract(fr_url_m, fr_cache_path_m):
-                            use_monthly_fr = True
-                        else:
-                            missing_fr.add(month_str)
-                            skip_fr = True
-                
-                if not skip_fr and use_monthly_fr:
-                    print(f"Using cached monthly fundingRate for {symbol} {month_str} on {date_str}...")
-                    fr_events_all = parse_funding_rate_file(fr_cache_path_m, symbol)
-                    filtered_fr = []
-                    for ev in fr_events_all:
-                        ev_date = datetime.datetime.fromtimestamp(
-                            ev['data']['timestamp'] / 1000.0,
-                            tz=datetime.timezone.utc,
-                        ).date()
-                        if ev_date == single_date:
-                            filtered_fr.append(ev)
-                    local_events.extend(filtered_fr)
+        # 4. Fetch fundingRate
+        fr_events = get_vision_events(symbol, 'fundingRate', single_date, missing_fr, vision_lock, cache_dir)
+        if fr_events is not None:
+            local_events.extend(fr_events)
 
         return local_events
 
     for symbol in args.symbols:
         missing_vision_bt_months = set()
+        missing_vision_at_months = set()
         missing_vision_fr_months = set()
         vision_lock = threading.Lock()
 
@@ -373,7 +385,7 @@ def main():
         
         print(f"Processing {len(tasks)} days for {symbol} in parallel...")
         with ThreadPoolExecutor(max_workers=5) as executor:
-            future_to_date = {executor.submit(process_symbol_date, symbol, d, missing_vision_bt_months, missing_vision_fr_months, vision_lock): d for d in tasks}
+            future_to_date = {executor.submit(process_symbol_date, symbol, d, missing_vision_bt_months, missing_vision_at_months, missing_vision_fr_months, vision_lock): d for d in tasks}
             for future in as_completed(future_to_date):
                 single_date = future_to_date[future]
                 try:
