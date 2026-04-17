@@ -50,14 +50,14 @@ class KalmanFilterBivariate:
     def __init__(self, delta=1e-5, r_var=1e-3):
         self.delta = delta
         self.r_var = r_var
-        self.state = [0.0, 0.0] # [alpha, beta]
+        self.state = [0.0, 1.0] # [alpha, beta]
         self.P = [[1.0, 0.0], [0.0, 1.0]] # state covariance matrix
         self.initialized = False
         self.count = 0
 
     def append(self, x: float, y: float, dt_ms: float = 1000.0):
         if not self.initialized:
-            self.state = [y, 0.0]
+            self.state = [y - x, 1.0]
             self.initialized = True
             self.count = 1
             return
@@ -88,7 +88,7 @@ class KalmanFilterBivariate:
         return self.state[0]
 
     def reset(self):
-        self.state = [0.0, 0.0]
+        self.state = [0.0, 1.0]
         self.P = [[1.0, 0.0], [0.0, 1.0]]
         self.initialized = False
         self.count = 0
@@ -168,6 +168,13 @@ class StatArbModel:
         # Subscribe to ticks
         self.bus.subscribe(f'TICK_{self.target}', self._on_target_tick)
         self.bus.subscribe(f'TICK_{self.feature}', self._on_feature_tick)
+        self.bus.subscribe('UPDATE_STRATEGY_PARAMS', self._on_update_params)
+        
+    def _on_update_params(self, payload: dict):
+        if 'kalman_delta' in payload:
+            self.bivariate.delta = float(payload['kalman_delta'])
+        if 'kalman_r_var' in payload:
+            self.bivariate.r_var = float(payload['kalman_r_var'])
         
     def _on_target_tick(self, tick: dict):
         self.target_bid = float(tick['bid'])
@@ -195,6 +202,7 @@ class StatArbModel:
         # the current tick's spread is computed with yesterday's estimate.
         # This prevents look-ahead bias in Z-score calculations.
         beta_prior = self.bivariate.get_beta()
+        alpha_prior = self.bivariate.get_alpha()
 
         dt_ms = timestamp - self.last_ts if self.last_ts > 0 else 1000.0
         if dt_ms <= 0: dt_ms = 1000.0
@@ -209,9 +217,10 @@ class StatArbModel:
 
         self.is_ready = True
         self.beta = beta_prior  # expose the *prior* beta (causal)
+        self.alpha_val = alpha_prior
 
-        # 2. Compute current Log-Spread using the prior (lagged) beta
-        self.spread = log_y - (beta_prior * log_x)
+        # 2. Compute current Log-Spread using the prior (lagged) beta and alpha
+        self.spread = log_y - (beta_prior * log_x) - alpha_prior
 
         # 3. Update Z-Score Math
         self.spread_stats.append(self.spread, dt_ms)
@@ -233,6 +242,7 @@ class StatArbModel:
             'feature_ask': self.feature_ask,
             'feature_bid': self.feature_bid,
             'beta': self.beta,
+            'alpha': self.alpha_val,
             'spread': self.spread,
             'spread_mean': self.spread_stats.mean,
             'spread_std': self.spread_stats.std(),
@@ -248,6 +258,7 @@ class StatArbModel:
         self.feature_price = 0.0
         self.is_ready = False
         self.beta = 0.0
+        self.alpha_val = 0.0
         self.spread = 0.0
         self.z_score = 0.0
 
@@ -287,6 +298,14 @@ class SignalGenerator:
         self.latest_pvalue = 0.0
         self.toxicity_threshold = 0.05
         self.kelly_fraction_limit = 0.25
+        self.max_drawdown_pct = 0.05
+        self.circuit_breaker_tripped = False
+        self.initial_capital = self.portfolio.cash
+        self.anchored_mean = None
+        self.anchored_std = None
+        self.min_beta = 0.5
+        self.max_beta = 1.5
+        self.stop_loss_multiplier = 2.0
 
         self.bus.subscribe('MODEL_UPDATED', self._on_model_updated)
         self.bus.subscribe('REGIME_CHANGE', self._on_regime_change)
@@ -306,6 +325,12 @@ class SignalGenerator:
             self.kelly_fraction_limit = float(payload['kelly_fraction_limit'])
         if 'toxicity_threshold' in payload:
             self.toxicity_threshold = float(payload['toxicity_threshold'])
+        if 'max_drawdown_pct' in payload:
+            self.max_drawdown_pct = float(payload['max_drawdown_pct'])
+        if 'min_beta' in payload:
+            self.min_beta = float(payload['min_beta'])
+        if 'max_beta' in payload:
+            self.max_beta = float(payload['max_beta'])
 
     def _on_funding_rate_update(self, payload: dict):
         """Track the latest funding rate for dynamic hurdle calculation."""
@@ -315,16 +340,16 @@ class SignalGenerator:
     def _compute_dynamic_hurdle_bps(self) -> float:
         """Compute the minimum edge (in bps) required to justify a new position.
 
-        dynamic_hurdle = maker_entry_fee + taker_exit_fee + slippage + funding_drag
+        dynamic_hurdle = taker_entry_fee + taker_exit_fee + slippage + funding_drag
 
         estimated hold time ≈ half_life_seconds (capped at one 8-hour funding period)
         funding_drag ≈ abs(funding_rate) × (hold / (8h)) × 10_000
         """
-        maker_fee_bps = self.maker_fee * 10_000    # 2 bps
-        taker_fee_bps = self.taker_fee * 10_000    # 5 bps
+        taker_entry_fee_bps = self.taker_fee * 10_000  # 5 bps
+        taker_exit_fee_bps = self.taker_fee * 10_000   # 5 bps
         hold_s = min(self.half_life_seconds, 8 * 3600)
         funding_bps = abs(self.current_funding_rate) * (hold_s / (8 * 3600)) * 10_000
-        hurdle = maker_fee_bps + taker_fee_bps + self.slippage_bps + funding_bps
+        hurdle = taker_entry_fee_bps + taker_exit_fee_bps + self.slippage_bps + funding_bps
         self.last_dynamic_hurdle_bps = hurdle
         return hurdle
 
@@ -332,22 +357,38 @@ class SignalGenerator:
         if not payload['is_ready']:
             return
 
+        target_price = payload.get('target_price', 0.0)
+        feature_price = payload.get('feature_price', 0.0)
+        
+        if target_price > 0 and feature_price > 0:
+            current_nav = self.portfolio.get_nav(target_price, feature_price)
+            drawdown_pct = (current_nav - self.initial_capital) / self.initial_capital
+            if drawdown_pct <= -self.max_drawdown_pct:
+                if not self.circuit_breaker_tripped:
+                    self.bus.publish('LOG', {'level': 'WARN', 'message': f'CIRCUIT BREAKER TRIPPED! Drawdown: {drawdown_pct*100:.2f}%'})
+                    self.circuit_breaker_tripped = True
+                self.bus.publish('SIGNAL_GENERATED', {'direction': 'EMERGENCY_CLOSE_SPREAD'})
+                return
+            if self.circuit_breaker_tripped:
+                return
+
         import math
         target_ask = payload.get('target_ask', payload.get('target_price', 0.0))
         target_bid = payload.get('target_bid', payload.get('target_price', 0.0))
         feature_ask = payload.get('feature_ask', payload.get('feature_price', 0.0))
         feature_bid = payload.get('feature_bid', payload.get('feature_price', 0.0))
         beta = payload.get('beta', 1.0)
+        alpha = payload.get('alpha', 0.0)
         spread_mean = payload.get('spread_mean', 0.0)
         spread_std = payload.get('spread_std', 0.0)
 
         if spread_std > 1e-8 and target_ask > 0 and feature_bid > 0 and target_bid > 0 and feature_ask > 0:
             if beta >= 0:
-                long_spread_val = math.log(target_ask) - beta * math.log(feature_bid)
-                short_spread_val = math.log(target_bid) - beta * math.log(feature_ask)
+                long_spread_val = math.log(target_ask) - beta * math.log(feature_bid) - alpha
+                short_spread_val = math.log(target_bid) - beta * math.log(feature_ask) - alpha
             else:
-                long_spread_val = math.log(target_ask) - beta * math.log(feature_ask)
-                short_spread_val = math.log(target_bid) - beta * math.log(feature_bid)
+                long_spread_val = math.log(target_ask) - beta * math.log(feature_ask) - alpha
+                short_spread_val = math.log(target_bid) - beta * math.log(feature_bid) - alpha
 
             long_z_score = (long_spread_val - spread_mean) / spread_std
             short_z_score = (short_spread_val - spread_mean) / spread_std
@@ -360,8 +401,8 @@ class SignalGenerator:
         # Dynamic cost hurdle replaces static min_profit_bps
         dynamic_hurdle_bps = self._compute_dynamic_hurdle_bps()
 
-        expected_edge_long_bps = abs(long_z_score) * spread_std * 10_000 - (self.maker_fee + self.taker_fee) * 10_000
-        expected_edge_short_bps = abs(short_z_score) * spread_std * 10_000 - (self.maker_fee + self.taker_fee) * 10_000
+        expected_edge_long_bps = abs(long_z_score) * spread_std * 10_000 - (self.taker_fee * 2) * 10_000
+        expected_edge_short_bps = abs(short_z_score) * spread_std * 10_000 - (self.taker_fee * 2) * 10_000
 
         # Entry signals (only when edge clears the dynamic hurdle)
         current_net_delta = self.portfolio.get_net_delta(target_ask, feature_bid)
@@ -370,7 +411,9 @@ class SignalGenerator:
         variance = spread_std ** 2
         c_deg = max(0.0, 1.0 - (self.latest_pvalue / self.toxicity_threshold))
 
-        if not self.is_toxic and variance > 1e-12:
+        is_beta_valid = (self.min_beta <= beta <= self.max_beta)
+
+        if not self.is_toxic and variance > 1e-12 and is_beta_valid:
             if long_z_score < -self.entry_threshold and current_spread_bps >= self.min_entry_spread_bps:
                 if expected_edge_long_bps > dynamic_hurdle_bps:
                     expected_edge_long_dec = expected_edge_long_bps / 10000.0
@@ -381,6 +424,8 @@ class SignalGenerator:
                     
                     if abs(current_net_delta + expected_target_notional) < self.max_net_delta and expected_target_notional > 0:
                         self.bus.publish('LOG', {'level': 'INFO', 'message': f'LONG_SPREAD signaled. Edge: {expected_edge_long_bps:.2f} bps, Kelly Notional: {expected_target_notional:.2f}'})
+                        self.anchored_mean = spread_mean
+                        self.anchored_std = spread_std
                         self.bus.publish('SIGNAL_GENERATED', {'direction': 'LONG_SPREAD', 'z_score': long_z_score, 'target_notional': expected_target_notional})
                 elif expected_edge_long_bps > 0:
                     self.bus.publish('LOG', {'level': 'WARN', 'message': f'LONG_SPREAD ignored. Edge {expected_edge_long_bps:.2f} bps < Hurdle {dynamic_hurdle_bps:.2f} bps'})
@@ -394,15 +439,49 @@ class SignalGenerator:
                     
                     if abs(current_net_delta - expected_target_notional) < self.max_net_delta and expected_target_notional > 0:
                         self.bus.publish('LOG', {'level': 'INFO', 'message': f'SHORT_SPREAD signaled. Edge: {expected_edge_short_bps:.2f} bps, Kelly Notional: {expected_target_notional:.2f}'})
+                        self.anchored_mean = spread_mean
+                        self.anchored_std = spread_std
                         self.bus.publish('SIGNAL_GENERATED', {'direction': 'SHORT_SPREAD', 'z_score': short_z_score, 'target_notional': expected_target_notional})
                 elif expected_edge_short_bps > 0:
                     self.bus.publish('LOG', {'level': 'WARN', 'message': f'SHORT_SPREAD ignored. Edge {expected_edge_short_bps:.2f} bps < Hurdle {dynamic_hurdle_bps:.2f} bps'})
 
         # Exit logic
-        if abs(z_score) > 4.0:
-            self.bus.publish('SIGNAL_GENERATED', {'direction': 'EMERGENCY_CLOSE_SPREAD', 'z_score': z_score})
-        elif abs(z_score) <= self.exit_threshold:
-            self.bus.publish('SIGNAL_GENERATED', {'direction': 'CLOSE_SPREAD', 'z_score': z_score})
+        if self.anchored_mean is not None and self.anchored_std is not None and self.anchored_std > 1e-12:
+            # We are currently in a position. Use the anchored parameters to measure reversion.
+            eval_z_score = (payload.get('spread', 0.0) - self.anchored_mean) / self.anchored_std
+            
+            # Determine direction of our position
+            target_pos = self.portfolio.positions.get(self.target, 0.0)
+            is_long = target_pos > 0.0
+            
+            # Reversion conditions:
+            # If LONG, we want the spread (and z-score) to increase towards 0.
+            # If SHORT, we want the spread (and z-score) to decrease towards 0.
+            reverted = False
+            if is_long and eval_z_score >= -self.exit_threshold:
+                reverted = True
+            elif not is_long and eval_z_score <= self.exit_threshold:
+                reverted = True
+                
+            # Emergency Stop Loss
+            emergency_threshold = self.entry_threshold * self.stop_loss_multiplier
+            stopped_out = False
+            if is_long and eval_z_score <= -emergency_threshold:
+                stopped_out = True
+            elif not is_long and eval_z_score >= emergency_threshold:
+                stopped_out = True
+                
+            if stopped_out:
+                self.anchored_mean = None
+                self.anchored_std = None
+                self.bus.publish('SIGNAL_GENERATED', {'direction': 'EMERGENCY_CLOSE_SPREAD', 'z_score': eval_z_score})
+            elif reverted:
+                self.anchored_mean = None
+                self.anchored_std = None
+                self.bus.publish('SIGNAL_GENERATED', {'direction': 'CLOSE_SPREAD', 'z_score': eval_z_score})
+        else:
+            # Not in a position, just tracking
+            eval_z_score = z_score
 
     def _on_regime_change(self, payload: dict):
         self.latest_pvalue = payload.get('adf_pvalue', 0.0)
@@ -731,64 +810,10 @@ class ExecutionManager:
             self.bus.publish('LOG', {'level': 'INFO', 'message': f'Entering SHORT_SPREAD for {self.target} & {self.feature}'})
             self._enter_spread('SELL', target_notional)
             
-        elif direction == 'CLOSE_SPREAD':
-            self.bus.publish('LOG', {'level': 'INFO', 'message': f'CLOSE_SPREAD signaled. Exiting {self.target} & {self.feature}'})
-            if self.state == 'LEGGING_MAKER_ENTRY':
-                # Cancel maker order if it hasn't filled yet
-                self.bus.publish('OUTBOUND_INTENT', {
-                    'action': 'CANCEL_ORDER',
-                    'order_id': self.active_maker_order_id,
-                    'symbol': self.target
-                })
-                self.state = 'IDLE'
-                self.active_maker_order_id = None
-                self.pending_leg2 = None
-                
-            elif self.state == 'HEDGED':
-                # Aggressive Limit exit both legs immediately
+        elif direction in ['CLOSE_SPREAD', 'EMERGENCY_CLOSE_SPREAD']:
+            if self.state != 'IDLE':
+                self.bus.publish('LOG', {'level': 'INFO', 'message': f'{direction} signaled. Exiting {self.target} & {self.feature}'})
                 self.state = 'CLOSING'
-                
-                target_pos = self.portfolio.positions[self.target]
-                feature_pos = self.portfolio.positions[self.feature]
-                slip_ratio = self.slippage_bps / 10000.0
-                
-                if abs(target_pos) > 1e-8:
-                    side = 'SELL' if target_pos > 0 else 'BUY'
-                    price = self.target_price * (1.0 - slip_ratio) if side == 'SELL' else self.target_price * (1.0 + slip_ratio)
-                    self.bus.publish('OUTBOUND_INTENT', {
-                        'action': 'PLACE_ORDER',
-                        'order_id': str(uuid.uuid4()),
-                        'symbol': self.target,
-                        'side': side,
-                        'type': 'LIMIT',
-                        'price': price,
-                        'qty': abs(target_pos)
-                    })
-                if abs(feature_pos) > 1e-8:
-                    side = 'SELL' if feature_pos > 0 else 'BUY'
-                    price = self.feature_price * (1.0 - slip_ratio) if side == 'SELL' else self.feature_price * (1.0 + slip_ratio)
-                    self.bus.publish('OUTBOUND_INTENT', {
-                        'action': 'PLACE_ORDER',
-                        'order_id': str(uuid.uuid4()),
-                        'symbol': self.feature,
-                        'side': side,
-                        'type': 'LIMIT',
-                        'price': price,
-                        'qty': abs(feature_pos)
-                    })
-                    
-        elif direction == 'EMERGENCY_CLOSE_SPREAD':
-            if self.state in ('LEGGING_MAKER_ENTRY', 'HEDGED'):
-                self.bus.publish('LOG', {'level': 'WARN', 'message': f'EMERGENCY_CLOSE_SPREAD triggered. Exiting {self.target} & {self.feature}'})
-                if self.state == 'LEGGING_MAKER_ENTRY':
-                    self.bus.publish('OUTBOUND_INTENT', {
-                        'action': 'CANCEL_ORDER',
-                        'order_id': self.active_maker_order_id,
-                        'symbol': self.target
-                    })
-                self.state = 'CLOSING'
-                self.active_maker_order_id = None
-                self.pending_leg2 = None
                 
                 target_pos = self.portfolio.positions[self.target]
                 feature_pos = self.portfolio.positions[self.feature]
@@ -802,7 +827,7 @@ class ExecutionManager:
                         'side': side,
                         'type': 'MARKET',
                         'qty': abs(target_pos),
-                        'price': 0
+                        'price': 0.0
                     })
                 if abs(feature_pos) > 1e-8:
                     side = 'SELL' if feature_pos > 0 else 'BUY'
@@ -813,129 +838,69 @@ class ExecutionManager:
                         'side': side,
                         'type': 'MARKET',
                         'qty': abs(feature_pos),
-                        'price': 0
+                        'price': 0.0
                     })
 
     def _enter_spread(self, target_side: str, target_notional: float):
         if self.feature_price == 0 or self.target_price == 0 or target_notional <= 0:
             return
             
-        self.state = 'LEGGING_MAKER_ENTRY'
-        self.active_maker_order_id = str(uuid.uuid4())
-        self.maker_order_ts = 0 
-        self.maker_filled_qty = 0.0
-        self.total_maker_orders += 1
+        self.state = 'HEDGED'
+        self.position_entry_ts = 0
         
         if self.latest_beta >= 0:
             feature_side = 'SELL' if target_side == 'BUY' else 'BUY'
         else:
             feature_side = target_side
             
-        maker_price = self.target_bid if target_side == 'BUY' else self.target_ask
-        target_qty = target_notional / maker_price if maker_price > 0 else 0.0
+        target_qty = target_notional / self.target_price if self.target_price > 0 else 0.0
+        feature_qty = target_qty * (self.target_price / self.feature_price) * abs(self.latest_beta)
         
-        slip_ratio = self.slippage_bps / 10000.0
-        if feature_side == 'BUY':
-            taker_price = self.feature_ask * (1.0 + slip_ratio)
-        else:
-            taker_price = self.feature_bid * (1.0 - slip_ratio)
-            
-        self.pending_leg2_template = {
-            'symbol': self.feature,
-            'side': feature_side,
-            'type': 'LIMIT',
-            'price': taker_price
-        }
+        target_qty = round(target_qty, 3)
+        feature_qty = round(feature_qty, 3)
         
         self.bus.publish('OUTBOUND_INTENT', {
             'action': 'PLACE_ORDER',
-            'order_id': self.active_maker_order_id,
+            'order_id': str(uuid.uuid4()),
             'symbol': self.target,
             'side': target_side,
-            'type': 'LIMIT',
-            'qty': round(target_qty, 3),
-            'price': round(maker_price, 2)
+            'type': 'MARKET',
+            'qty': target_qty,
+            'price': 0.0
+        })
+        
+        self.bus.publish('OUTBOUND_INTENT', {
+            'action': 'PLACE_ORDER',
+            'order_id': str(uuid.uuid4()),
+            'symbol': self.feature,
+            'side': feature_side,
+            'type': 'MARKET',
+            'qty': feature_qty,
+            'price': 0.0
         })
 
     def _on_timer(self, payload: dict):
         ts = payload.get('timestamp', 0)
         
-        # Initialize maker_order_ts on the first timer tick after order is placed
-        if self.state == 'LEGGING_MAKER_ENTRY' and self.active_maker_order_id:
-            if self.maker_order_ts == 0:
-                self.maker_order_ts = ts
-            
-            if self.maker_order_ts > 0 and (ts - self.maker_order_ts) > self.maker_timeout_ms:
-                # Maker timeout exceeded, cancel the order
-                self.bus.publish('LOG', {'level': 'WARN', 'message': f'Maker order timed out ({self.maker_timeout_ms/1000:.1f}s), cancelling...'})
-                self.bus.publish('OUTBOUND_INTENT', {
-                    'action': 'CANCEL_ORDER',
-                    'order_id': self.active_maker_order_id,
-                    'symbol': self.target
-                })
-                self.maker_timeouts += 1
-                self.state = 'IDLE'
-                self.active_maker_order_id = None
-                self.pending_leg2 = None
-                self.maker_order_ts = 0
-
         # Time-Stop: Check if we've held the position drastically longer than the mean-reversion expected time
         if self.state == 'HEDGED' and self.position_entry_ts > 0:
             hold_time_ms = ts - self.position_entry_ts
             if hold_time_ms > 2.0 * self.half_life_ms:
-                # We've held 2x the cointegration half-life without converging -> Emergency exit
                 self.bus.publish('LOG', {'level': 'WARN', 'message': f'Time-stop triggered. Held for {hold_time_ms/1000:.1f}s (half-life: {self.half_life_ms/1000:.1f}s)'})
                 self.bus.publish('SIGNAL_GENERATED', {'direction': 'EMERGENCY_CLOSE_SPREAD'})
 
     def _on_order_update(self, payload: dict):
         status = payload.get('status')
-        order_id = payload.get('order_id')
-        
-        if self.state == 'LEGGING_MAKER_ENTRY' and order_id == self.active_maker_order_id:
-            qty_filled = float(payload.get('filled_qty', 0.0))
-            
-            if qty_filled > self.maker_filled_qty and self.pending_leg2_template is not None:
-                newly_filled = qty_filled - self.maker_filled_qty
-                self.maker_filled_qty = qty_filled
-                
-                taker_qty = newly_filled * (self.target_price / self.feature_price) * abs(self.latest_beta)
-                # Production enforcement: Round to exchange lot size (e.g. 3 decimal places)
-                taker_qty = round(taker_qty, 3)
-                
-                self.bus.publish('OUTBOUND_INTENT', {
-                    'action': 'PLACE_ORDER',
-                    'order_id': str(uuid.uuid4()),
-                    'symbol': self.pending_leg2_template['symbol'],
-                    'side': self.pending_leg2_template['side'],
-                    'type': self.pending_leg2_template['type'],
-                    'price': self.pending_leg2_template.get('price'),
-                    'qty': taker_qty,
-                    'price': round(self.pending_leg2_template.get('price', 0.0), 2)
-                })
-                
-            if status == 'FILLED':
-                # Leg2 filled completely, we are fully hedged now
-                self.state = 'HEDGED'
+        if status == 'FILLED':
+            if self.state == 'HEDGED' and self.position_entry_ts == 0:
                 self.position_entry_ts = float(payload.get('transaction_time', payload.get('transactionTime', payload.get('timestamp', 0))))
-                self.active_maker_order_id = None
-                self.pending_leg2_template = None
-                self.maker_order_ts = 0
-                self.maker_filled_qty = 0.0
-                
-            elif status in ['CANCELED', 'REJECTED', 'EXPIRED']:
-                self.state = 'IDLE'
-                self.active_maker_order_id = None
-                self.pending_leg2_template = None
-                self.maker_order_ts = 0
-                self.maker_filled_qty = 0.0
 
-        # If CLOSING, stay in CLOSING until positions reach zero (monitored by PortfolioManager)
-        # We can loosely reset the state to IDLE if both positions hit zero.
         if self.state == 'CLOSING':
             target_pos = self.portfolio.positions.get(self.target, 0.0)
             feature_pos = self.portfolio.positions.get(self.feature, 0.0)
             if abs(target_pos) < 1e-8 and abs(feature_pos) < 1e-8:
                 self.state = 'IDLE'
+                self.position_entry_ts = 0
 
 # ==========================================
 # 6. ENGINE ENTRY POINT
@@ -1078,6 +1043,7 @@ class TradingEngine:
                 'current_spread': self.model.spread,
                 'z_score': self.model.z_score,
                 'beta': self.model.beta,
+                'alpha': getattr(self.model, 'alpha_val', 0.0),
                 'hedge_ratio': self.model.beta,
                 'is_ready': self.model.is_ready,
                 'target_price': self.model.target_price,
