@@ -224,29 +224,72 @@ def main():
         out_name = f"{'_'.join(args.symbols)}_vision_{args.start_date}_{args.end_date}.jsonl"
         args.output = out_dir / out_name
 
+    import threading
     all_events = []
+    events_lock = threading.Lock()
 
-    for symbol in args.symbols:
-        for single_date in daterange(start_date, end_date):
-            date_str = single_date.strftime("%Y-%m-%d")
-            month_str = single_date.strftime("%Y-%m")
-            
-            # bookTicker Daily
-            bt_url = f"https://data.binance.vision/data/futures/um/daily/bookTicker/{symbol}/{symbol}-bookTicker-{date_str}.zip"
-            bt_cache_path = cache_dir / f"{symbol}-bookTicker-{date_str}.csv"
-            
+    def process_symbol_date(symbol, single_date, missing_bt, missing_fr, vision_lock):
+        local_events = []
+        date_str = single_date.strftime("%Y-%m-%d")
+        month_str = single_date.strftime("%Y-%m")
+        
+        # bookTicker Daily
+        bt_url = f"https://data.binance.vision/data/futures/um/daily/bookTicker/{symbol}/{symbol}-bookTicker-{date_str}.zip"
+        bt_cache_path = cache_dir / f"{symbol}-bookTicker-{date_str}.csv"
+        
+        # Try monthly bookTicker
+        bt_url_m = f"https://data.binance.vision/data/futures/um/monthly/bookTicker/{symbol}/{symbol}-bookTicker-{month_str}.zip"
+        bt_cache_path_m = cache_dir / f"{symbol}-bookTicker-{month_str}.csv"
+        
+        use_api = False
+        use_monthly_bt = False
+
+        with vision_lock:
+            if month_str in missing_bt:
+                use_api = True
+            elif bt_cache_path_m.exists():
+                use_monthly_bt = True
+
+        if use_api:
+            api_ticks = fetch_binance_klines_as_ticks(symbol, single_date, single_date)
+            local_events.extend(api_ticks)
+        elif use_monthly_bt:
+            print(f"Using cached monthly bookTicker for {symbol} {month_str} on {date_str}...")
+            bt_events_all = parse_book_ticker_file(bt_cache_path_m, symbol)
+            filtered_bt = []
+            for ev in bt_events_all:
+                ev_date = datetime.datetime.fromtimestamp(
+                    ev['data']['timestamp'] / 1000.0,
+                    tz=datetime.timezone.utc,
+                ).date()
+                if ev_date == single_date:
+                    filtered_bt.append(ev)
+            local_events.extend(filtered_bt)
+        else:
             if download_and_extract(bt_url, bt_cache_path):
                 print(f"Parsing {bt_cache_path}...")
                 bt_events = parse_book_ticker_file(bt_cache_path, symbol)
-                all_events.extend(bt_events)
+                local_events.extend(bt_events)
             else:
-                # Try monthly bookTicker if daily 404s
-                bt_url_m = f"https://data.binance.vision/data/futures/um/monthly/bookTicker/{symbol}/{symbol}-bookTicker-{month_str}.zip"
-                bt_cache_path_m = cache_dir / f"{symbol}-bookTicker-{month_str}.csv"
-                if download_and_extract(bt_url_m, bt_cache_path_m):
-                    print(f"Parsing {bt_cache_path_m}...")
+                with vision_lock:
+                    if month_str in missing_bt:
+                        use_api = True
+                    elif bt_cache_path_m.exists():
+                        use_monthly_bt = True
+                    else:
+                        if download_and_extract(bt_url_m, bt_cache_path_m):
+                            use_monthly_bt = True
+                        else:
+                            print(f"Both daily and monthly vision archives 404'd for {symbol} on {date_str}.")
+                            missing_bt.add(month_str)
+                            use_api = True
+                
+                if use_api:
+                    api_ticks = fetch_binance_klines_as_ticks(symbol, single_date, single_date)
+                    local_events.extend(api_ticks)
+                elif use_monthly_bt:
+                    print(f"Using cached monthly bookTicker for {symbol} {month_str} on {date_str}...")
                     bt_events_all = parse_book_ticker_file(bt_cache_path_m, symbol)
-                    # Filter to this date
                     filtered_bt = []
                     for ev in bt_events_all:
                         ev_date = datetime.datetime.fromtimestamp(
@@ -255,29 +298,60 @@ def main():
                         ).date()
                         if ev_date == single_date:
                             filtered_bt.append(ev)
-                    all_events.extend(filtered_bt)
-                else:
-                    # Fallback to python-binance
-                    print(f"Both daily and monthly vision archives 404'd for {symbol} on {date_str}.")
-                    api_ticks = fetch_binance_klines_as_ticks(symbol, single_date, single_date)
-                    all_events.extend(api_ticks)
+                    local_events.extend(filtered_bt)
 
-            # Note: fundingRate is often monthly in vision, sometimes daily. Let's try daily first.
-            fr_url = f"https://data.binance.vision/data/futures/um/daily/fundingRate/{symbol}/{symbol}-fundingRate-{date_str}.zip"
-            fr_cache_path = cache_dir / f"{symbol}-fundingRate-{date_str}.csv"
-            
+        # fundingRate Daily
+        fr_url = f"https://data.binance.vision/data/futures/um/daily/fundingRate/{symbol}/{symbol}-fundingRate-{date_str}.zip"
+        fr_cache_path = cache_dir / f"{symbol}-fundingRate-{date_str}.csv"
+        
+        # Try monthly fundingRate
+        fr_url_m = f"https://data.binance.vision/data/futures/um/monthly/fundingRate/{symbol}/{symbol}-fundingRate-{month_str}.zip"
+        fr_cache_path_m = cache_dir / f"{symbol}-fundingRate-{month_str}.csv"
+
+        skip_fr = False
+        use_monthly_fr = False
+
+        with vision_lock:
+            if month_str in missing_fr:
+                skip_fr = True
+            elif fr_cache_path_m.exists():
+                use_monthly_fr = True
+
+        if skip_fr:
+            pass 
+        elif use_monthly_fr:
+            print(f"Using cached monthly fundingRate for {symbol} {month_str} on {date_str}...")
+            fr_events_all = parse_funding_rate_file(fr_cache_path_m, symbol)
+            filtered_fr = []
+            for ev in fr_events_all:
+                ev_date = datetime.datetime.fromtimestamp(
+                    ev['data']['timestamp'] / 1000.0,
+                    tz=datetime.timezone.utc,
+                ).date()
+                if ev_date == single_date:
+                    filtered_fr.append(ev)
+            local_events.extend(filtered_fr)
+        else:
             if download_and_extract(fr_url, fr_cache_path):
                 print(f"Parsing {fr_cache_path}...")
                 fr_events = parse_funding_rate_file(fr_cache_path, symbol)
-                all_events.extend(fr_events)
+                local_events.extend(fr_events)
             else:
-                # Try monthly if daily 404s
-                fr_url_m = f"https://data.binance.vision/data/futures/um/monthly/fundingRate/{symbol}/{symbol}-fundingRate-{month_str}.zip"
-                fr_cache_path_m = cache_dir / f"{symbol}-fundingRate-{month_str}.csv"
-                if download_and_extract(fr_url_m, fr_cache_path_m):
-                    print(f"Parsing {fr_cache_path_m}...")
+                with vision_lock:
+                    if month_str in missing_fr:
+                        skip_fr = True
+                    elif fr_cache_path_m.exists():
+                        use_monthly_fr = True
+                    else:
+                        if download_and_extract(fr_url_m, fr_cache_path_m):
+                            use_monthly_fr = True
+                        else:
+                            missing_fr.add(month_str)
+                            skip_fr = True
+                
+                if not skip_fr and use_monthly_fr:
+                    print(f"Using cached monthly fundingRate for {symbol} {month_str} on {date_str}...")
                     fr_events_all = parse_funding_rate_file(fr_cache_path_m, symbol)
-                    # Filter to this date
                     filtered_fr = []
                     for ev in fr_events_all:
                         ev_date = datetime.datetime.fromtimestamp(
@@ -286,7 +360,28 @@ def main():
                         ).date()
                         if ev_date == single_date:
                             filtered_fr.append(ev)
-                    all_events.extend(filtered_fr)
+                    local_events.extend(filtered_fr)
+
+        return local_events
+
+    for symbol in args.symbols:
+        missing_vision_bt_months = set()
+        missing_vision_fr_months = set()
+        vision_lock = threading.Lock()
+
+        tasks = list(daterange(start_date, end_date))
+        
+        print(f"Processing {len(tasks)} days for {symbol} in parallel...")
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            future_to_date = {executor.submit(process_symbol_date, symbol, d, missing_vision_bt_months, missing_vision_fr_months, vision_lock): d for d in tasks}
+            for future in as_completed(future_to_date):
+                single_date = future_to_date[future]
+                try:
+                    events = future.result()
+                    with events_lock:
+                        all_events.extend(events)
+                except Exception as e:
+                    print(f"Error processing {symbol} on {single_date}: {e}")
 
     print(f"Sorting {len(all_events)} events...")
     all_events.sort(key=lambda x: x['data']['timestamp'])
