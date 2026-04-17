@@ -242,11 +242,14 @@ export class BinanceAdapter implements MarketDataAdapter {
           const order = data.o;
           if (this.executionReportCallback) {
             this.executionReportCallback({
-              clientOrderId: order.c,
+              order_id: order.c,
               status: order.X,
-              lastFilledQuantity: order.l,
-              lastFilledPrice: order.L,
-              transactionTime: data.E,
+              symbol: order.s,
+              side: order.S,
+              filled_qty: parseFloat(order.l),
+              price: parseFloat(order.L),
+              is_maker: order.m,
+              transaction_time: data.E,
               cancelReason: order.r
             });
           }

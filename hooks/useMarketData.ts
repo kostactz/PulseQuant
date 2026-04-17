@@ -118,21 +118,27 @@ export function useMarketData(connectEnabled: boolean = true, tradingMode: Tradi
             setTimeout(() => {
               if (onExecutionReportImmediateRef.current) {
                 onExecutionReportImmediateRef.current({
-                  clientOrderId: intent.clientOrderId,
+                  order_id: intent.clientOrderId,
                   status: 'NEW',
-                  lastFilledQuantity: 0,
-                  lastFilledPrice: intent.price || 0,
-                  transactionTime: Date.now(),
+                  symbol: intent.symbol,
+                  side: intent.side,
+                  filled_qty: 0,
+                  price: intent.price || 0,
+                  is_maker: intent.type === 'LIMIT',
+                  transaction_time: Date.now(),
                 });
                 
                 // Simulate fill for market orders or test limits
                 setTimeout(() => {
                   onExecutionReportImmediateRef.current!({
-                    clientOrderId: intent.clientOrderId,
+                    order_id: intent.clientOrderId,
                     status: 'FILLED',
-                    lastFilledQuantity: intent.quantity,
-                    lastFilledPrice: intent.price || (intent.side === 'BUY' ? latestTickRefs.current[intent.symbol]?.ask : latestTickRefs.current[intent.symbol]?.bid),
-                    transactionTime: Date.now(),
+                    symbol: intent.symbol,
+                    side: intent.side,
+                    filled_qty: intent.quantity,
+                    price: intent.price || (intent.side === 'BUY' ? latestTickRefs.current[intent.symbol]?.ask : latestTickRefs.current[intent.symbol]?.bid),
+                    is_maker: intent.type === 'LIMIT',
+                    transaction_time: Date.now(),
                   });
                 }, 500);
               }
@@ -141,11 +147,12 @@ export function useMarketData(connectEnabled: boolean = true, tradingMode: Tradi
             setTimeout(() => {
               if (onExecutionReportImmediateRef.current) {
                 onExecutionReportImmediateRef.current({
-                  clientOrderId: intent.clientOrderId,
+                  order_id: intent.clientOrderId,
                   status: 'CANCELED',
-                  lastFilledQuantity: 0,
-                  lastFilledPrice: 0,
-                  transactionTime: Date.now(),
+                  symbol: intent.symbol,
+                  filled_qty: 0,
+                  price: 0,
+                  transaction_time: Date.now(),
                 });
               }
             }, 100);
@@ -165,11 +172,14 @@ export function useMarketData(connectEnabled: boolean = true, tradingMode: Tradi
           );
           if (onExecutionReportImmediateRef.current) {
             onExecutionReportImmediateRef.current({
-              clientOrderId: intent.clientOrderId,
+              order_id: intent.clientOrderId,
               status: 'NEW',
-              lastFilledQuantity: 0,
-              lastFilledPrice: intent.price || 0,
-              transactionTime: Date.now(),
+              symbol: intent.symbol,
+              side: intent.side,
+              filled_qty: 0,
+              price: intent.price || 0,
+              is_maker: intent.type === 'LIMIT',
+              transaction_time: Date.now(),
             });
           }
         } else if (intent.action === 'CANCEL_ORDER') {
@@ -179,11 +189,12 @@ export function useMarketData(connectEnabled: boolean = true, tradingMode: Tradi
           );
           if (onExecutionReportImmediateRef.current) {
             onExecutionReportImmediateRef.current({
-              clientOrderId: intent.clientOrderId,
+              order_id: intent.clientOrderId,
               status: 'CANCELED',
-              lastFilledQuantity: 0,
-              lastFilledPrice: 0,
-              transactionTime: Date.now(),
+              symbol: intent.symbol,
+              filled_qty: 0,
+              price: 0,
+              transaction_time: Date.now(),
             });
           }
         }
@@ -192,11 +203,13 @@ export function useMarketData(connectEnabled: boolean = true, tradingMode: Tradi
       const handleOrderRejected = (intent: Intent, reason: string) => {
         if (onExecutionReportImmediateRef.current) {
           onExecutionReportImmediateRef.current({
-            clientOrderId: intent.clientOrderId,
+            order_id: intent.clientOrderId,
             status: 'REJECTED',
-            lastFilledQuantity: 0,
-            lastFilledPrice: 0,
-            transactionTime: Date.now(),
+            symbol: intent.symbol,
+            side: intent.side,
+            filled_qty: 0,
+            price: 0,
+            transaction_time: Date.now(),
             cancelReason: reason
           });
         }

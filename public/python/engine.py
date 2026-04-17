@@ -348,12 +348,20 @@ class SignalGenerator:
         expected_target_notional = self.portfolio.cash * 0.1
 
         if not self.is_toxic:
-            if long_z_score < -self.entry_threshold and expected_edge_long_bps > dynamic_hurdle_bps:
-                if abs(current_net_delta + expected_target_notional) < self.max_net_delta:
-                    self.bus.publish('SIGNAL_GENERATED', {'direction': 'LONG_SPREAD', 'z_score': long_z_score})
-            elif short_z_score > self.entry_threshold and expected_edge_short_bps > dynamic_hurdle_bps:
-                if abs(current_net_delta - expected_target_notional) < self.max_net_delta:
-                    self.bus.publish('SIGNAL_GENERATED', {'direction': 'SHORT_SPREAD', 'z_score': short_z_score})
+            if long_z_score < -self.entry_threshold:
+                if expected_edge_long_bps > dynamic_hurdle_bps:
+                    if abs(current_net_delta + expected_target_notional) < self.max_net_delta:
+                        self.bus.publish('LOG', {'level': 'INFO', 'message': f'LONG_SPREAD signaled. Edge: {expected_edge_long_bps:.2f} bps > Hurdle: {dynamic_hurdle_bps:.2f} bps'})
+                        self.bus.publish('SIGNAL_GENERATED', {'direction': 'LONG_SPREAD', 'z_score': long_z_score})
+                elif expected_edge_long_bps > 0:
+                    self.bus.publish('LOG', {'level': 'WARN', 'message': f'LONG_SPREAD ignored. Edge {expected_edge_long_bps:.2f} bps < Hurdle {dynamic_hurdle_bps:.2f} bps'})
+            elif short_z_score > self.entry_threshold:
+                if expected_edge_short_bps > dynamic_hurdle_bps:
+                    if abs(current_net_delta - expected_target_notional) < self.max_net_delta:
+                        self.bus.publish('LOG', {'level': 'INFO', 'message': f'SHORT_SPREAD signaled. Edge: {expected_edge_short_bps:.2f} bps > Hurdle: {dynamic_hurdle_bps:.2f} bps'})
+                        self.bus.publish('SIGNAL_GENERATED', {'direction': 'SHORT_SPREAD', 'z_score': short_z_score})
+                elif expected_edge_short_bps > 0:
+                    self.bus.publish('LOG', {'level': 'WARN', 'message': f'SHORT_SPREAD ignored. Edge {expected_edge_short_bps:.2f} bps < Hurdle {dynamic_hurdle_bps:.2f} bps'})
 
         # Exit logic
         if abs(z_score) > 4.0:
@@ -362,7 +370,14 @@ class SignalGenerator:
             self.bus.publish('SIGNAL_GENERATED', {'direction': 'CLOSE_SPREAD', 'z_score': z_score})
 
     def _on_regime_change(self, payload: dict):
-        self.is_toxic = payload.get('toxic', False)
+        if payload.get('toxic', False):
+            if not self.is_toxic:
+                self.bus.publish('LOG', {'level': 'WARN', 'message': f'Regime changed to TOXIC (hurst: {payload.get("hurst", 1):.2f}, hl: {payload.get("half_life", 9999):.1f}). Scaling down.'})
+            self.is_toxic = payload.get('toxic', False)
+        else:
+            if self.is_toxic:
+                self.bus.publish('LOG', {'level': 'INFO', 'message': 'Regime recovered to SAFE. Restoring size.'})
+            self.is_toxic = False
         # Update expected hold time from half-life estimate (convert from minutes to seconds)
         hl_mins = payload.get('half_life')
         if hl_mins is not None and hl_mins > 0:
@@ -549,6 +564,8 @@ class PortfolioManager:
                 # Fees are applied exactly once here (replay marks is_maker; engine applies rate)
                 self.cash -= (qty * price * sign) + fee
                 self.total_fees_paid += fee
+                
+                self.bus.publish('LOG', {'level': 'INFO', 'message': f"Order FILLED: {side} {qty} {symbol} @ {price}. Fee: {fee:.4f} (Maker: {is_maker})"})
 
                 # Accept both timestamp alias forms
                 ts = payload.get('transaction_time',
@@ -667,12 +684,15 @@ class ExecutionManager:
         direction = payload.get('direction')
         
         if direction == 'LONG_SPREAD' and self.state == 'IDLE':
+            self.bus.publish('LOG', {'level': 'INFO', 'message': f'Entering LONG_SPREAD for {self.target} & {self.feature}'})
             self._enter_spread('BUY')
             
         elif direction == 'SHORT_SPREAD' and self.state == 'IDLE':
+            self.bus.publish('LOG', {'level': 'INFO', 'message': f'Entering SHORT_SPREAD for {self.target} & {self.feature}'})
             self._enter_spread('SELL')
             
         elif direction == 'CLOSE_SPREAD':
+            self.bus.publish('LOG', {'level': 'INFO', 'message': f'CLOSE_SPREAD signaled. Exiting {self.target} & {self.feature}'})
             if self.state == 'LEGGING_MAKER_ENTRY':
                 # Cancel maker order if it hasn't filled yet
                 self.bus.publish('OUTBOUND_INTENT', {
@@ -719,6 +739,7 @@ class ExecutionManager:
                     
         elif direction == 'EMERGENCY_CLOSE_SPREAD':
             if self.state in ('LEGGING_MAKER_ENTRY', 'HEDGED'):
+                self.bus.publish('LOG', {'level': 'WARN', 'message': f'EMERGENCY_CLOSE_SPREAD triggered. Exiting {self.target} & {self.feature}'})
                 if self.state == 'LEGGING_MAKER_ENTRY':
                     self.bus.publish('OUTBOUND_INTENT', {
                         'action': 'CANCEL_ORDER',
@@ -804,6 +825,7 @@ class ExecutionManager:
             
             if self.maker_order_ts > 0 and (ts - self.maker_order_ts) > self.maker_timeout_ms:
                 # Maker timeout exceeded, cancel the order
+                self.bus.publish('LOG', {'level': 'WARN', 'message': f'Maker order timed out ({self.maker_timeout_ms/1000:.1f}s), cancelling...'})
                 self.bus.publish('OUTBOUND_INTENT', {
                     'action': 'CANCEL_ORDER',
                     'order_id': self.active_maker_order_id,
@@ -819,6 +841,7 @@ class ExecutionManager:
             hold_time_ms = ts - self.position_entry_ts
             if hold_time_ms > 2.0 * self.half_life_ms:
                 # We've held 2x the cointegration half-life without converging -> Emergency exit
+                self.bus.publish('LOG', {'level': 'WARN', 'message': f'Time-stop triggered. Held for {hold_time_ms/1000:.1f}s (half-life: {self.half_life_ms/1000:.1f}s)'})
                 self.bus.publish('SIGNAL_GENERATED', {'direction': 'EMERGENCY_CLOSE_SPREAD'})
 
     def _on_order_update(self, payload: dict):
@@ -850,7 +873,7 @@ class ExecutionManager:
             if status == 'FILLED':
                 # Leg2 filled completely, we are fully hedged now
                 self.state = 'HEDGED'
-                self.position_entry_ts = float(payload.get('timestamp', 0))
+                self.position_entry_ts = float(payload.get('transaction_time', payload.get('transactionTime', payload.get('timestamp', 0))))
                 self.active_maker_order_id = None
                 self.pending_leg2_template = None
                 self.maker_order_ts = 0
@@ -924,10 +947,14 @@ class TradingEngine:
 
     def process_events(self, events: List[dict]):
         intents = []
+        logs = []
         # Temporarily intercept intents from the bus
         def on_intent(intent):
             intents.append(intent)
+        def on_log(log):
+            logs.append(log)
         self.bus.subscribe('OUTBOUND_INTENT', on_intent)
+        self.bus.subscribe('LOG', on_log)
 
         for event in events:
             ev_type = event.get('type')
@@ -961,8 +988,11 @@ class TradingEngine:
         if 'OUTBOUND_INTENT' in self.bus.subscribers:
             if on_intent in self.bus.subscribers['OUTBOUND_INTENT']:
                 self.bus.subscribers['OUTBOUND_INTENT'].remove(on_intent)
+        if 'LOG' in self.bus.subscribers:
+            if on_log in self.bus.subscribers['LOG']:
+                self.bus.subscribers['LOG'].remove(on_log)
 
-        return {'intents': intents}
+        return {'intents': intents, 'logs': logs}
 
     def _check_timers(self, current_ts: int):
         # 1-second timer
