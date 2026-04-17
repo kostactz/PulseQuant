@@ -259,13 +259,14 @@ class SignalGenerator:
 
         # Parameters
         self.entry_threshold = 2.0
+        self.min_entry_spread_bps = 0.0
         self.exit_threshold = 0.0
         self.max_half_life = 7200  # in periods
         self.max_net_delta = 50000.0  # max unhedged exposure
 
-        self.maker_fee = 0.0002   # 2 bps — maker entry
+        self.maker_fee = 0.0000   # 2 bps — maker entry
         self.taker_fee = 0.0005   # 5 bps — taker exit
-        self.slippage_bps = 10.0  # default conservative slippage
+        self.slippage_bps = 5.0  # default conservative slippage
 
         # Dynamic hurdle state
         self.current_funding_rate: float = 0.0   # most recent funding rate (any symbol)
@@ -282,6 +283,8 @@ class SignalGenerator:
     def _on_update_params(self, payload: dict):
         if 'sigma_threshold' in payload:
             self.entry_threshold = float(payload['sigma_threshold'])
+        if 'min_entry_spread_bps' in payload:
+            self.min_entry_spread_bps = float(payload['min_entry_spread_bps'])
         if 'max_net_delta' in payload:
             self.max_net_delta = float(payload['max_net_delta'])
         if 'slippage_bps' in payload:
@@ -346,16 +349,17 @@ class SignalGenerator:
         # Entry signals (only when edge clears the dynamic hurdle)
         current_net_delta = self.portfolio.get_net_delta(target_ask, feature_bid)
         expected_target_notional = self.portfolio.cash * 0.1
+        current_spread_bps = abs(payload.get('spread', 0.0)) * 10000.0
 
         if not self.is_toxic:
-            if long_z_score < -self.entry_threshold:
+            if long_z_score < -self.entry_threshold and current_spread_bps >= self.min_entry_spread_bps:
                 if expected_edge_long_bps > dynamic_hurdle_bps:
                     if abs(current_net_delta + expected_target_notional) < self.max_net_delta:
                         self.bus.publish('LOG', {'level': 'INFO', 'message': f'LONG_SPREAD signaled. Edge: {expected_edge_long_bps:.2f} bps > Hurdle: {dynamic_hurdle_bps:.2f} bps'})
                         self.bus.publish('SIGNAL_GENERATED', {'direction': 'LONG_SPREAD', 'z_score': long_z_score})
                 elif expected_edge_long_bps > 0:
                     self.bus.publish('LOG', {'level': 'WARN', 'message': f'LONG_SPREAD ignored. Edge {expected_edge_long_bps:.2f} bps < Hurdle {dynamic_hurdle_bps:.2f} bps'})
-            elif short_z_score > self.entry_threshold:
+            elif short_z_score > self.entry_threshold and current_spread_bps >= self.min_entry_spread_bps:
                 if expected_edge_short_bps > dynamic_hurdle_bps:
                     if abs(current_net_delta - expected_target_notional) < self.max_net_delta:
                         self.bus.publish('LOG', {'level': 'INFO', 'message': f'SHORT_SPREAD signaled. Edge: {expected_edge_short_bps:.2f} bps > Hurdle: {dynamic_hurdle_bps:.2f} bps'})
@@ -489,8 +493,11 @@ class PortfolioManager:
         self.total_fees_paid = 0.0
         self.total_funding_paid = 0.0  # net funding debited (positive = paid out)
         self.realized_pnl = 0.0
+        self.win_trades = 0
+        self.loss_trades = 0
         self.avg_entry_prices = {target: 0.0, feature: 0.0}
         self.recent_trades = []
+        self.all_historical_trades = []
 
         self.bus.subscribe('ORDER_UPDATE', self._on_order_update)
         self.bus.subscribe('FUNDING_RATE_UPDATE', self._on_funding_rate_update)
@@ -548,6 +555,11 @@ class PortfolioManager:
                     pnl = (price - entry_price) * closed_qty * (1.0 if prev_pos > 0 else -1.0)
                     self.realized_pnl += pnl
 
+                    if pnl > 0:
+                        self.win_trades += 1
+                    elif pnl < 0:
+                        self.loss_trades += 1
+
                     # If position flipped, update avg entry for the remaining qty
                     if (prev_pos > 0 and new_pos < 0) or (prev_pos < 0 and new_pos > 0):
                         self.avg_entry_prices[symbol] = price
@@ -582,6 +594,7 @@ class PortfolioManager:
                     'realized_pnl': pnl,
                 }
                 self.recent_trades.append(trade_record)
+                self.all_historical_trades.append(trade_record)
                 if len(self.recent_trades) > 100:
                     self.recent_trades.pop(0)
 
@@ -640,6 +653,8 @@ class ExecutionManager:
         self.maker_timeout_ms = 5000  # Dynamic based on regime
         self.maker_order_ts = 0
         self.slippage_bps = 5.0       # Dynamic based on volatility
+        self.maker_timeouts = 0
+        self.total_maker_orders = 0
         
         self.bus.subscribe('SIGNAL_GENERATED', self._on_signal)
         self.bus.subscribe('ORDER_UPDATE', self._on_order_update)
@@ -784,6 +799,7 @@ class ExecutionManager:
         self.active_maker_order_id = str(uuid.uuid4())
         self.maker_order_ts = 0 
         self.maker_filled_qty = 0.0
+        self.total_maker_orders += 1
         
         if self.latest_beta >= 0:
             feature_side = 'SELL' if target_side == 'BUY' else 'BUY'
@@ -831,6 +847,7 @@ class ExecutionManager:
                     'order_id': self.active_maker_order_id,
                     'symbol': self.target
                 })
+                self.maker_timeouts += 1
                 self.state = 'IDLE'
                 self.active_maker_order_id = None
                 self.pending_leg2 = None
@@ -984,6 +1001,9 @@ class TradingEngine:
 
             elif ev_type == 'REGIME_DATA':
                 self.bus.publish_async('ANALYTICS_REQUEST', data)
+            
+            elif ev_type == 'UPDATE_STRATEGY_PARAMS':
+                self.bus.publish('UPDATE_STRATEGY_PARAMS', data)
 
         if 'OUTBOUND_INTENT' in self.bus.subscribers:
             if on_intent in self.bus.subscribers['OUTBOUND_INTENT']:
@@ -1016,6 +1036,12 @@ class TradingEngine:
             ) if hasattr(self.portfolio, 'get_unrealized_pnl') else 0.0,
             'total_fees_paid': getattr(self.portfolio, 'total_fees_paid', 0.0),
             'total_funding_paid': getattr(self.portfolio, 'total_funding_paid', 0.0),
+            'win_trades': getattr(self.portfolio, 'win_trades', 0),
+            'loss_trades': getattr(self.portfolio, 'loss_trades', 0),
+            'trades_volume': getattr(self.portfolio, 'win_trades', 0) + getattr(self.portfolio, 'loss_trades', 0),
+            'maker_timeouts': getattr(self.execution, 'maker_timeouts', 0),
+            'total_maker_orders': getattr(self.execution, 'total_maker_orders', 0),
+            'all_historical_trades': getattr(self.portfolio, 'all_historical_trades', []),
             'dynamic_hurdle_bps': getattr(self.signal_generator, 'last_dynamic_hurdle_bps', 0.0),
             'positions': self.portfolio.positions,
             'target_position': self.portfolio.positions.get(self.target, 0.0),
@@ -1039,6 +1065,10 @@ class TradingEngine:
                 'adf_pvalue': self.latest_regime.get('adf_pvalue')
             },
             'toxicity_flag': self.signal_generator.is_toxic,
+            'strategy_params': {
+                'sigma_threshold': getattr(self.signal_generator, 'entry_threshold', 2.0),
+                'min_entry_spread_bps': getattr(self.signal_generator, 'min_entry_spread_bps', 0.0),
+            },
             'execution_state': self.execution.state,
             'recent_trades': getattr(self.portfolio, 'recent_trades', [])[-50:],
             'pending_orders': [self.execution.pending_leg2_template] if getattr(self.execution, 'pending_leg2_template', None) else []

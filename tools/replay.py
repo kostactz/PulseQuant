@@ -24,6 +24,7 @@ import gzip
 import os
 import sys
 import time
+import math
 import importlib.util
 
 
@@ -189,6 +190,11 @@ def run_capture(engine, rows, slippage_bps=10, chunk_size=500):
     last_tick: dict = {}
 
     total_rows = len(rows)
+    
+    nav_history = []
+    first_ts = None
+    last_sample_ts = 0
+    sample_interval_ms = 3600 * 1000  # 1 hour
 
     for i, row in enumerate(rows):
         ev_type = row.get('type')
@@ -201,6 +207,14 @@ def run_capture(engine, rows, slippage_bps=10, chunk_size=500):
             # Update zero-order hold for this symbol
             last_tick[symbol] = data
             last_tick['__any__'] = data  # fallback for symbol-agnostic lookups
+            
+            if first_ts is None:
+                first_ts = tick_ts
+                nav_history.append(engine.get_ui_delta()['portfolio_value'])
+                last_sample_ts = tick_ts
+            elif tick_ts - last_sample_ts >= sample_interval_ms:
+                nav_history.append(engine.get_ui_delta()['portfolio_value'])
+                last_sample_ts = tick_ts
 
             # Feed tick to engine, collect any new intents
             result = engine.process_events([row])
@@ -228,10 +242,10 @@ def run_capture(engine, rows, slippage_bps=10, chunk_size=500):
     tps = total_rows / elapsed if elapsed > 0 else 0
     print(f"Replay finished in {elapsed:.2f}s ({tps:.0f} events/sec).")
 
-    return engine.get_ui_delta()
+    return engine.get_ui_delta(), nav_history
 
 
-def print_metrics(snapshot):
+def print_metrics(snapshot, nav_history=None, verbose=False):
     print("\n" + "="*55)
     print("REPLAY RESULTS")
     print("="*55)
@@ -256,6 +270,45 @@ def print_metrics(snapshot):
     print(f"Z-Score:             {metrics.get('z_score', 0.0):.4f}")
     print(f"Beta:                {metrics.get('beta', 0.0):.6f}")
     print(f"Ready:               {metrics.get('is_ready', False)}")
+    
+    trades_volume = snapshot.get('trades_volume', 0)
+    timed_out = snapshot.get('maker_timeouts', 0)
+    total_maker_orders = snapshot.get('total_maker_orders', 0)
+    hit_ratio = 1.0 - (timed_out / total_maker_orders) if total_maker_orders > 0 else 0.0
+    
+    win_trades = snapshot.get('win_trades', 0)
+    loss_trades = snapshot.get('loss_trades', 0)
+    wl_ratio = (win_trades / loss_trades) if loss_trades > 0 else (float('inf') if win_trades > 0 else 0.0)
+
+    sharpe = 0.0
+    if nav_history and len(nav_history) > 1:
+        returns = [(nav_history[i] - nav_history[i-1]) / nav_history[i-1] for i in range(1, len(nav_history))]
+        mean_r = sum(returns) / len(returns)
+        variance = sum((r - mean_r) ** 2 for r in returns) / len(returns)
+        std_r = math.sqrt(variance) if variance > 0 else 1e-8
+        # Annualized Sharpe assuming hourly sampling
+        sharpe = (mean_r / std_r) * math.sqrt(24 * 365)
+        
+    print("\n--- Trading Details ---")
+    print(f"Trades Volume:       {trades_volume} completed legs")
+    print(f"Timed-out Volume:    {timed_out} maker timeouts")
+    print(f"Hit Ratio:           {hit_ratio:.2%}")
+    print(f"Win/Loss Ratio:      {wl_ratio:.2f} ({win_trades} W / {loss_trades} L)")
+    print(f"Annualized Sharpe:   {sharpe:.2f}")
+    
+    if verbose:
+        all_trades = snapshot.get('all_historical_trades', [])
+        print("\n--- Verbose Trade History ---")
+        if not all_trades:
+            print("No trades executed.")
+        else:
+            print(f"{'Time':<15} | {'Symbol':<10} | {'Side':<5} | {'Qty':<6} | {'Price':<10} | {'Fee':<8} | {'Maker':<5} | {'PnL'}")
+            print("-" * 82)
+            import datetime
+            for t in all_trades:
+                ts_str = datetime.datetime.fromtimestamp(t['timestamp']/1000).strftime('%m-%d %H:%M:%S')
+                print(f"{ts_str:<15} | {t['symbol']:<10} | {t['side']:<5} | {t['qty']:<6} | {t['price']:<10.4f} | {t['fee']:<8.4f} | {str(t['is_maker']):<5} | {t['realized_pnl']:<8.4f}")
+    
     print("="*55)
 
 
@@ -274,6 +327,12 @@ if __name__ == '__main__':
                         help="Feature asset symbol")
     parser.add_argument('--slippage-bps', type=float, default=10.0,
                         help="Market-order slippage in basis points (default 10 bps = 0.10%%)")
+    parser.add_argument('--sigma-threshold', type=float, default=2.0,
+                        help="Z-score threshold for entry")
+    parser.add_argument('--min-entry-spread', type=float, default=0.0,
+                        help="Minimum spread in bps to enter a trade")
+    parser.add_argument('--verbose', action='store_true',
+                        help="Print verbose trade history")
 
     args = parser.parse_args()
 
@@ -288,5 +347,14 @@ if __name__ == '__main__':
         feature=args.feature.upper(),
     )
 
-    final_snapshot = run_capture(engine, rows, slippage_bps=args.slippage_bps)
-    print_metrics(final_snapshot)
+    # Apply user-specified strategy parameters
+    engine.process_events([{
+        'type': 'UPDATE_STRATEGY_PARAMS',
+        'data': {
+            'sigma_threshold': args.sigma_threshold,
+            'min_entry_spread_bps': args.min_entry_spread
+        }
+    }])
+
+    final_snapshot, nav_hist = run_capture(engine, rows, slippage_bps=args.slippage_bps)
+    print_metrics(final_snapshot, nav_history=nav_hist, verbose=args.verbose)
