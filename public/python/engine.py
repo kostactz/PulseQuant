@@ -55,15 +55,16 @@ class KalmanFilterBivariate:
         self.initialized = False
         self.count = 0
 
-    def append(self, x: float, y: float):
+    def append(self, x: float, y: float, dt_ms: float = 1000.0):
         if not self.initialized:
             self.state = [y, 0.0]
             self.initialized = True
             self.count = 1
             return
         self.count += 1
-        self.P[0][0] += self.delta
-        self.P[1][1] += self.delta
+        time_scale = max(0.1, dt_ms / 1000.0)
+        self.P[0][0] += self.delta * time_scale
+        self.P[1][1] += self.delta * time_scale
         h0 = 1.0
         h1 = x
         y_pred = self.state[0] * h0 + self.state[1] * h1
@@ -95,14 +96,15 @@ class KalmanFilterBivariate:
 
 class EWMASingle:
     """O(1) EWMA for single variables (e.g. Z-Score Mean and Std)."""
-    def __init__(self, window_size: float):
-        self.alpha = 2.0 / (window_size + 1.0)
+    def __init__(self, window_size_ms: float):
+        self.tau = window_size_ms
+        self.alpha = 0.0
         self.initialized = False
         self.mean = 0.0
         self.var = 0.0
         self.count = 0
 
-    def append(self, x: float):
+    def append(self, x: float, dt_ms: float = 1000.0):
         if not self.initialized:
             self.mean = x
             self.var = 0.0
@@ -111,6 +113,8 @@ class EWMASingle:
             return
 
         self.count += 1
+        import math
+        self.alpha = 1.0 - math.exp(-dt_ms / self.tau) if self.tau > 0 else 1.0
         diff = x - self.mean
         self.mean += self.alpha * diff
         self.var = (1.0 - self.alpha) * (self.var + self.alpha * diff * diff)
@@ -140,10 +144,11 @@ class StatArbModel:
         # Configuration
         self.w_beta = 1200  # Longer structural window (ticks/events approx)
         self.w_z = 300      # Shorter tactical window
+        self.last_ts = 0
         
         # Statistical trackers
         self.bivariate = KalmanFilterBivariate(delta=1e-5, r_var=1e-3)
-        self.spread_stats = EWMASingle(self.w_z)
+        self.spread_stats = EWMASingle(self.w_z * 1000.0)
         
         # ZOH State
         self.target_price = 0.0
@@ -191,8 +196,12 @@ class StatArbModel:
         # This prevents look-ahead bias in Z-score calculations.
         beta_prior = self.bivariate.get_beta()
 
+        dt_ms = timestamp - self.last_ts if self.last_ts > 0 else 1000.0
+        if dt_ms <= 0: dt_ms = 1000.0
+        self.last_ts = timestamp
+
         # 1. Update Bivariate Math (Kalman step)
-        self.bivariate.append(log_x, log_y)
+        self.bivariate.append(log_x, log_y, dt_ms)
 
         # Minimum warmup period
         if self.bivariate.count < min(50, self.w_beta // 4):
@@ -205,7 +214,7 @@ class StatArbModel:
         self.spread = log_y - (beta_prior * log_x)
 
         # 3. Update Z-Score Math
-        self.spread_stats.append(self.spread)
+        self.spread_stats.append(self.spread, dt_ms)
 
         if self.spread_stats.count > min(25, self.w_z // 4):
             std = self.spread_stats.std()
@@ -232,6 +241,7 @@ class StatArbModel:
         })
 
     def reset(self):
+        self.last_ts = 0
         self.bivariate.reset()
         self.spread_stats.reset()
         self.target_price = 0.0
@@ -274,6 +284,9 @@ class SignalGenerator:
         self.last_dynamic_hurdle_bps: float = 0.0
 
         self.is_toxic = False
+        self.latest_pvalue = 0.0
+        self.toxicity_threshold = 0.05
+        self.kelly_fraction_limit = 0.25
 
         self.bus.subscribe('MODEL_UPDATED', self._on_model_updated)
         self.bus.subscribe('REGIME_CHANGE', self._on_regime_change)
@@ -289,6 +302,10 @@ class SignalGenerator:
             self.max_net_delta = float(payload['max_net_delta'])
         if 'slippage_bps' in payload:
             self.slippage_bps = float(payload['slippage_bps'])
+        if 'kelly_fraction_limit' in payload:
+            self.kelly_fraction_limit = float(payload['kelly_fraction_limit'])
+        if 'toxicity_threshold' in payload:
+            self.toxicity_threshold = float(payload['toxicity_threshold'])
 
     def _on_funding_rate_update(self, payload: dict):
         """Track the latest funding rate for dynamic hurdle calculation."""
@@ -348,22 +365,36 @@ class SignalGenerator:
 
         # Entry signals (only when edge clears the dynamic hurdle)
         current_net_delta = self.portfolio.get_net_delta(target_ask, feature_bid)
-        expected_target_notional = self.portfolio.cash * 0.1
         current_spread_bps = abs(payload.get('spread', 0.0)) * 10000.0
+        
+        variance = spread_std ** 2
+        c_deg = max(0.0, 1.0 - (self.latest_pvalue / self.toxicity_threshold))
 
-        if not self.is_toxic:
+        if not self.is_toxic and variance > 1e-12:
             if long_z_score < -self.entry_threshold and current_spread_bps >= self.min_entry_spread_bps:
                 if expected_edge_long_bps > dynamic_hurdle_bps:
-                    if abs(current_net_delta + expected_target_notional) < self.max_net_delta:
-                        self.bus.publish('LOG', {'level': 'INFO', 'message': f'LONG_SPREAD signaled. Edge: {expected_edge_long_bps:.2f} bps > Hurdle: {dynamic_hurdle_bps:.2f} bps'})
-                        self.bus.publish('SIGNAL_GENERATED', {'direction': 'LONG_SPREAD', 'z_score': long_z_score})
+                    expected_edge_long_dec = expected_edge_long_bps / 10000.0
+                    kelly_long = expected_edge_long_dec / variance
+                    half_kelly_long = kelly_long / 2.0
+                    target_allocation_long = min(half_kelly_long * c_deg, self.kelly_fraction_limit)
+                    expected_target_notional = self.portfolio.cash * target_allocation_long
+                    
+                    if abs(current_net_delta + expected_target_notional) < self.max_net_delta and expected_target_notional > 0:
+                        self.bus.publish('LOG', {'level': 'INFO', 'message': f'LONG_SPREAD signaled. Edge: {expected_edge_long_bps:.2f} bps, Kelly Notional: {expected_target_notional:.2f}'})
+                        self.bus.publish('SIGNAL_GENERATED', {'direction': 'LONG_SPREAD', 'z_score': long_z_score, 'target_notional': expected_target_notional})
                 elif expected_edge_long_bps > 0:
                     self.bus.publish('LOG', {'level': 'WARN', 'message': f'LONG_SPREAD ignored. Edge {expected_edge_long_bps:.2f} bps < Hurdle {dynamic_hurdle_bps:.2f} bps'})
             elif short_z_score > self.entry_threshold and current_spread_bps >= self.min_entry_spread_bps:
                 if expected_edge_short_bps > dynamic_hurdle_bps:
-                    if abs(current_net_delta - expected_target_notional) < self.max_net_delta:
-                        self.bus.publish('LOG', {'level': 'INFO', 'message': f'SHORT_SPREAD signaled. Edge: {expected_edge_short_bps:.2f} bps > Hurdle: {dynamic_hurdle_bps:.2f} bps'})
-                        self.bus.publish('SIGNAL_GENERATED', {'direction': 'SHORT_SPREAD', 'z_score': short_z_score})
+                    expected_edge_short_dec = expected_edge_short_bps / 10000.0
+                    kelly_short = expected_edge_short_dec / variance
+                    half_kelly_short = kelly_short / 2.0
+                    target_allocation_short = min(half_kelly_short * c_deg, self.kelly_fraction_limit)
+                    expected_target_notional = self.portfolio.cash * target_allocation_short
+                    
+                    if abs(current_net_delta - expected_target_notional) < self.max_net_delta and expected_target_notional > 0:
+                        self.bus.publish('LOG', {'level': 'INFO', 'message': f'SHORT_SPREAD signaled. Edge: {expected_edge_short_bps:.2f} bps, Kelly Notional: {expected_target_notional:.2f}'})
+                        self.bus.publish('SIGNAL_GENERATED', {'direction': 'SHORT_SPREAD', 'z_score': short_z_score, 'target_notional': expected_target_notional})
                 elif expected_edge_short_bps > 0:
                     self.bus.publish('LOG', {'level': 'WARN', 'message': f'SHORT_SPREAD ignored. Edge {expected_edge_short_bps:.2f} bps < Hurdle {dynamic_hurdle_bps:.2f} bps'})
 
@@ -374,6 +405,7 @@ class SignalGenerator:
             self.bus.publish('SIGNAL_GENERATED', {'direction': 'CLOSE_SPREAD', 'z_score': z_score})
 
     def _on_regime_change(self, payload: dict):
+        self.latest_pvalue = payload.get('adf_pvalue', 0.0)
         if payload.get('toxic', False):
             if not self.is_toxic:
                 self.bus.publish('LOG', {'level': 'WARN', 'message': f'Regime changed to TOXIC (hurst: {payload.get("hurst", 1):.2f}, hl: {payload.get("half_life", 9999):.1f}). Scaling down.'})
@@ -649,7 +681,6 @@ class ExecutionManager:
         self.position_entry_ts = 0
         self.half_life_ms = 3600000.0  # default 1 hour
         
-        self.base_size = 0.1 # Trade size for the target asset
         self.maker_timeout_ms = 5000  # Dynamic based on regime
         self.maker_order_ts = 0
         self.slippage_bps = 5.0       # Dynamic based on volatility
@@ -663,13 +694,6 @@ class ExecutionManager:
         self.bus.subscribe('REGIME_CHANGE', self._on_regime_change)
         
     def _on_regime_change(self, payload: dict):
-        if payload.get('toxic', False):
-            # Scale down size during toxic regimes
-            self.base_size = max(0.01, self.base_size * 0.5)
-        else:
-            # Restore/scale up slightly if safe, capped at 0.5
-            self.base_size = min(0.5, self.base_size * 1.1)
-            
         hl_mins = payload.get('half_life', 50.0)
         if hl_mins <= 0:
             hl_mins = 50.0
@@ -697,14 +721,15 @@ class ExecutionManager:
 
     def _on_signal(self, payload: dict):
         direction = payload.get('direction')
+        target_notional = payload.get('target_notional', 0.0)
         
         if direction == 'LONG_SPREAD' and self.state == 'IDLE':
             self.bus.publish('LOG', {'level': 'INFO', 'message': f'Entering LONG_SPREAD for {self.target} & {self.feature}'})
-            self._enter_spread('BUY')
+            self._enter_spread('BUY', target_notional)
             
         elif direction == 'SHORT_SPREAD' and self.state == 'IDLE':
             self.bus.publish('LOG', {'level': 'INFO', 'message': f'Entering SHORT_SPREAD for {self.target} & {self.feature}'})
-            self._enter_spread('SELL')
+            self._enter_spread('SELL', target_notional)
             
         elif direction == 'CLOSE_SPREAD':
             self.bus.publish('LOG', {'level': 'INFO', 'message': f'CLOSE_SPREAD signaled. Exiting {self.target} & {self.feature}'})
@@ -791,8 +816,8 @@ class ExecutionManager:
                         'price': 0
                     })
 
-    def _enter_spread(self, target_side: str):
-        if self.feature_price == 0 or self.target_price == 0:
+    def _enter_spread(self, target_side: str, target_notional: float):
+        if self.feature_price == 0 or self.target_price == 0 or target_notional <= 0:
             return
             
         self.state = 'LEGGING_MAKER_ENTRY'
@@ -807,6 +832,7 @@ class ExecutionManager:
             feature_side = target_side
             
         maker_price = self.target_bid if target_side == 'BUY' else self.target_ask
+        target_qty = target_notional / maker_price if maker_price > 0 else 0.0
         
         slip_ratio = self.slippage_bps / 10000.0
         if feature_side == 'BUY':
@@ -827,7 +853,7 @@ class ExecutionManager:
             'symbol': self.target,
             'side': target_side,
             'type': 'LIMIT',
-            'qty': round(self.base_size, 3),
+            'qty': round(target_qty, 3),
             'price': round(maker_price, 2)
         })
 
