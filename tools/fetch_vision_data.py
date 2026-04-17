@@ -8,6 +8,77 @@ import tempfile
 import json
 import csv
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from binance.client import Client
+
+client = Client()
+
+def fetch_binance_klines_as_ticks(symbol, start_date, end_date):
+    """Fallback: Fetch 1m klines from Binance API and simulate ticks."""
+    print(f"Fallback: Fetching 1m klines for {symbol} via Binance API from {start_date} to {end_date}...")
+    
+    start_ts = datetime.datetime.combine(start_date, datetime.time.min)
+    end_ts = datetime.datetime.combine(end_date, datetime.time.max)
+    
+    interval_seconds = 60
+    chunk_seconds = 10000 * interval_seconds
+    chunk_delta = datetime.timedelta(seconds=chunk_seconds)
+    
+    chunks = []
+    curr = start_ts
+    while curr < end_ts:
+        next_curr = curr + chunk_delta
+        if next_curr > end_ts:
+            next_curr = end_ts
+        chunks.append((curr, next_curr))
+        curr = next_curr
+
+    klines = []
+    
+    def fetch_chunk(s, e):
+        return client.get_historical_klines(
+            symbol,
+            '1m',
+            s.strftime("%d %b, %Y %H:%M:%S"),
+            e.strftime("%d %b, %Y %H:%M:%S")
+        )
+
+    completed = 0
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {executor.submit(fetch_chunk, ch[0], ch[1]): (i, ch) for i, ch in enumerate(chunks)}
+        results = []
+        for f in as_completed(futures):
+            i, ch = futures[f]
+            try:
+                data = f.result()
+                results.append((i, data))
+                completed += 1
+            except Exception as e:
+                print(f"ERROR fetching chunk {ch[0]} - {ch[1]}: {e}")
+                
+    results.sort(key=lambda x: x[0])
+    for r in results:
+        if r[1]:
+            klines.extend(r[1])
+
+    events = []
+    for row in klines:
+        if not row: continue
+        ts = int(row[0])
+        close_price = float(row[4])
+        bid = close_price * 0.9999
+        ask = close_price * 1.0001
+        events.append({
+            'type': 'TICK',
+            'data': {
+                'symbol': symbol,
+                'timestamp': ts,
+                'bid': bid,
+                'ask': ask
+            }
+        })
+    print(f"Fetched {len(events)} simulated ticks from API for {symbol} from {start_date} to {end_date}.")
+    return events
 
 def parse_date(date_str):
     return datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
@@ -185,6 +256,11 @@ def main():
                         if ev_date == single_date:
                             filtered_bt.append(ev)
                     all_events.extend(filtered_bt)
+                else:
+                    # Fallback to python-binance
+                    print(f"Both daily and monthly vision archives 404'd for {symbol} on {date_str}.")
+                    api_ticks = fetch_binance_klines_as_ticks(symbol, single_date, single_date)
+                    all_events.extend(api_ticks)
 
             # Note: fundingRate is often monthly in vision, sometimes daily. Let's try daily first.
             fr_url = f"https://data.binance.vision/data/futures/um/daily/fundingRate/{symbol}/{symbol}-fundingRate-{date_str}.zip"
