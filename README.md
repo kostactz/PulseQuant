@@ -37,6 +37,26 @@ In-browser high-performance Statistical Arbitrage (Stat Arb) trading tool and si
 2. `npm run dev`
 3. Open `http://localhost:3000`
 
+## Backtesting & Analysis Tools
+
+**1. Cointegration Analysis**
+Test if two assets are cointegrated and find optimal parameters:
+```bash
+python public/python/scripts/cointegration_test.py --target-ticker ORDIUSDC --feature-ticker SUIUSDC
+```
+
+**2. Fetch Historical Data**
+Download Binance Vision archive data (falls back to API if missing) for backtesting:
+```bash
+python tools/fetch_vision_data.py --symbols ORDIUSDC SUIUSDC --start-date 2026-03-01 --end-date 2026-03-31 --output capture.jsonl
+```
+
+**3. Run Replay Backtester**
+Run the Python stat-arb engine against the captured historical data:
+```bash
+python tools/replay.py --input capture.jsonl --target ORDIUSDC --feature SUIUSDC
+```
+
 ## Tests
 
 - Unit (TS): `npm run test:unit` (Vitest)
