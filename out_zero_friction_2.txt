@@ -1,0 +1,46 @@
+Loading data from capture_small.jsonl...
+Loaded 100000 events.
+Starting replay (slippage=0.0 bps)...
+Progress: 10% (10000/100000)
+Progress: 20% (20000/100000)
+Progress: 30% (30000/100000)
+Progress: 40% (40000/100000)
+Progress: 50% (50000/100000)
+Progress: 60% (60000/100000)
+Progress: 70% (70000/100000)
+Progress: 80% (80000/100000)
+Progress: 90% (90000/100000)
+Progress: 100% (100000/100000)
+Replay finished in 2.55s (39191 events/sec).
+
+=======================================================
+REPLAY RESULTS
+=======================================================
+
+--- Portfolio ---
+Final NAV:           $100000.0000
+Cash:                $100000.0000
+Realized PnL:        $0.0000
+Unrealized PnL:      $0.0000
+Total Fees Paid:     $0.0000
+Total Funding Paid:  $0.000000
+Positions:           {'SUSHIUSDC': 0.0, 'CAKEUSDC': 0.0}
+Net Delta:           $0.0000
+
+--- Strategy ---
+Toxicity Flag:       False
+Execution State:     IDLE
+Dynamic Hurdle:      0.0 bps
+
+--- Spread Metrics ---
+Z-Score:             -0.0553
+Beta:                0.129576
+Ready:               True
+
+--- Trading Details ---
+Trades Volume:       0 completed legs
+Timed-out Volume:    0 maker timeouts
+Hit Ratio:           0.00%
+Win/Loss Ratio:      0.00 (0 W / 0 L)
+Annualized Sharpe:   0.00
+=======================================================

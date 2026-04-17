@@ -57,7 +57,16 @@ def import_engine(path='public/python/engine.py'):
     return mod
 
 
-def _make_fill_report(order_id, symbol, side, qty, price, is_maker, ts):
+
+def _dispatch_to_engine(engine, events, verbose=False, ts=None):
+    result = engine.process_events(events)
+    if result and result.get('logs') and verbose:
+        for log in result['logs']:
+            t_str = f"[{ts}] " if ts else ""
+            print(f"{t_str}{log.get('level', 'INFO')}: {log.get('message')}")
+    return result
+
+def _make_fill_report(order_id, symbol, side, qty, price, is_maker, ts, position_id=None):
     """Build an EXECUTION_REPORT data dict.  Both timestamp aliases are present."""
     return {
         'order_id': order_id,
@@ -69,11 +78,12 @@ def _make_fill_report(order_id, symbol, side, qty, price, is_maker, ts):
         'is_maker': is_maker,
         'transaction_time': ts,
         'transactionTime': ts,
+        'position_id': position_id,
     }
 
 
 def process_intents(engine, intents, pending_limit_orders, row_ts,
-                    last_tick, slippage_bps):
+                    last_tick, slippage_bps, verbose=False):
     """Process outbound intents from the engine.
 
     - MARKET orders → immediate fill with slippage applied to mid.
@@ -90,9 +100,10 @@ def process_intents(engine, intents, pending_limit_orders, row_ts,
             price = float(intent.get('price', 0))
             side = intent.get('side', '').upper()
             symbol = intent.get('symbol', '').upper()
+            position_id = intent.get('position_id')
 
             # Acknowledge order creation
-            engine.process_events([{'type': 'EXECUTION_REPORT', 'data': {
+            _dispatch_to_engine(engine, [{'type': 'EXECUTION_REPORT', 'data': {
                 'order_id': order_id,
                 'status': 'NEW',
                 'symbol': symbol,
@@ -101,7 +112,7 @@ def process_intents(engine, intents, pending_limit_orders, row_ts,
                 'price': price,
                 'transaction_time': row_ts,
                 'transactionTime': row_ts,
-            }}])
+            }}], verbose=verbose, ts=row_ts)
 
             if order_type == 'MARKET':
                 # Compute mid from the most recent tick for this symbol (or
@@ -119,9 +130,9 @@ def process_intents(engine, intents, pending_limit_orders, row_ts,
                 else:
                     exec_price = round(mid * (1.0 - slip), 8)
 
-                engine.process_events([{'type': 'EXECUTION_REPORT', 'data':
+                _dispatch_to_engine(engine, [{'type': 'EXECUTION_REPORT', 'data':
                     _make_fill_report(order_id, symbol, side, qty,
-                                      exec_price, False, row_ts)}])
+                                      exec_price, False, row_ts, position_id)}], verbose=verbose, ts=row_ts)
 
             else:  # LIMIT order → queue for trade-through
                 pending_limit_orders.append({
@@ -131,6 +142,7 @@ def process_intents(engine, intents, pending_limit_orders, row_ts,
                     'qty': qty,
                     'price': price,
                     'ts': row_ts,
+                    'position_id': position_id,
                 })
 
         elif action == 'CANCEL_ORDER':
@@ -138,7 +150,7 @@ def process_intents(engine, intents, pending_limit_orders, row_ts,
             pending_limit_orders[:] = [
                 o for o in pending_limit_orders if o['order_id'] != order_id
             ]
-            engine.process_events([{'type': 'EXECUTION_REPORT', 'data': {
+            _dispatch_to_engine(engine, [{'type': 'EXECUTION_REPORT', 'data': {
                 'order_id': order_id,
                 'status': 'CANCELED',
                 'symbol': intent.get('symbol', ''),
@@ -147,10 +159,10 @@ def process_intents(engine, intents, pending_limit_orders, row_ts,
                 'price': 0,
                 'transaction_time': row_ts,
                 'transactionTime': row_ts,
-            }}])
+            }}], verbose=verbose, ts=row_ts)
 
 
-def _check_limit_fills(engine, pending_limit_orders, tick_data, tick_ts):
+def _check_limit_fills(engine, pending_limit_orders, tick_data, tick_ts, last_tick, slippage_bps, verbose=False):
     """Check all pending limit orders against the latest tick for trade-through.
 
     Trade-through rules (conservative, no look-ahead, full-fill only):
@@ -175,13 +187,15 @@ def _check_limit_fills(engine, pending_limit_orders, tick_data, tick_ts):
             filled.append(o)
 
     for o in filled:
-        engine.process_events([{'type': 'EXECUTION_REPORT', 'data':
+        result = _dispatch_to_engine(engine, [{'type': 'EXECUTION_REPORT', 'data':
             _make_fill_report(o['order_id'], o['symbol'], o['side'],
-                              o['qty'], o['price'], True, tick_ts)}])
+                              o['qty'], o['price'], True, tick_ts, o.get('position_id'))}], verbose=verbose, ts=tick_ts)
+        if result and result.get('intents'):
+            process_intents(engine, result['intents'], pending_limit_orders, tick_ts, last_tick, slippage_bps, verbose=verbose)
         pending_limit_orders.remove(o)
 
 
-def run_capture(engine, rows, slippage_bps=10, chunk_size=500):
+def run_capture(engine, rows, slippage_bps=10, chunk_size=500, verbose=False):
     print(f"Starting replay (slippage={slippage_bps} bps)...")
     start_time = time.time()
 
@@ -217,21 +231,21 @@ def run_capture(engine, rows, slippage_bps=10, chunk_size=500):
                 last_sample_ts = tick_ts
 
             # Feed tick to engine, collect any new intents
-            result = engine.process_events([row])
+            result = _dispatch_to_engine(engine, [row], verbose=verbose, ts=row.get('data', row).get('timestamp'))
             if result and result.get('intents'):
                 process_intents(engine, result['intents'], pending_limit_orders,
-                                tick_ts, last_tick, slippage_bps)
+                                tick_ts, last_tick, slippage_bps, verbose=verbose)
 
             # Check limit order trade-through on every new tick
-            _check_limit_fills(engine, pending_limit_orders, data, tick_ts)
+            _check_limit_fills(engine, pending_limit_orders, data, tick_ts, last_tick, slippage_bps, verbose=verbose)
 
         elif ev_type == 'FUNDING_RATE_UPDATE':
             # Route funding events directly — engine handles accounting
-            engine.process_events([row])
+            _dispatch_to_engine(engine, [row], verbose=verbose)
 
         else:
             # Forward any other event type (REGIME_DATA etc.) as-is
-            engine.process_events([row])
+            _dispatch_to_engine(engine, [row], verbose=verbose)
 
         # Progress reporting
         if total_rows > 0 and (i + 1) % max(1, total_rows // 10) == 0:
@@ -327,10 +341,24 @@ if __name__ == '__main__':
                         help="Feature asset symbol")
     parser.add_argument('--slippage-bps', type=float, default=10.0,
                         help="Market-order slippage in basis points (default 10 bps = 0.10%%)")
+    parser.add_argument('--taker-fee', type=float, default=0.0005,
+                        help="Taker fee (default 0.0005 = 5 bps)")
     parser.add_argument('--sigma-threshold', type=float, default=2.0,
                         help="Z-score threshold for entry")
     parser.add_argument('--min-entry-spread', type=float, default=0.0,
                         help="Minimum spread in bps to enter a trade")
+    parser.add_argument('--min-beta', type=float, default=0.5,
+                        help="Minimum allowed beta for entry")
+    parser.add_argument('--max-beta', type=float, default=1.5,
+                        help="Maximum allowed beta for entry")
+    parser.add_argument('--kalman-delta', type=float, default=1e-5,
+                        help="Kalman filter delta (state variance)")
+    parser.add_argument('--kalman-r-var', type=float, default=1e-3,
+                        help="Kalman filter r_var (observation noise)")
+    parser.add_argument('--kelly-fraction', type=float, default=0.25,
+                        help="Maximum kelly fraction limit")
+    parser.add_argument('--time-stop', type=str, default='auto',
+                        help="Time stop configuration (auto, x2, 45m, 2.5h, 120s)")
     parser.add_argument('--verbose', action='store_true',
                         help="Print verbose trade history")
 
@@ -347,14 +375,42 @@ if __name__ == '__main__':
         feature=args.feature.upper(),
     )
 
+    # Persistent logger to capture all engine LOG events (including async)
+    def _persistent_replay_logger(payload):
+        level = payload.get('level', 'INFO')
+        msg = payload.get('message', '')
+        ts = payload.get('timestamp') or ''
+        # Include event tag if present for easier grepping
+        tag = payload.get('event', '')
+        prefix = f"[{ts}] " if ts else ''
+        if tag:
+            print(f"{prefix}{level}: {tag} - {msg}")
+        else:
+            print(f"{prefix}{level}: {msg}")
+
+    # Subscribe the persistent logger before replay begins so all logs are captured
+    try:
+        engine.bus.subscribe('LOG', _persistent_replay_logger)
+    except Exception:
+        # Defensive: if engine bus not ready, ignore
+        pass
+
     # Apply user-specified strategy parameters
     engine.process_events([{
         'type': 'UPDATE_STRATEGY_PARAMS',
         'data': {
             'sigma_threshold': args.sigma_threshold,
-            'min_entry_spread_bps': args.min_entry_spread
+            'min_entry_spread_bps': args.min_entry_spread,
+            'min_beta': args.min_beta,
+            'max_beta': args.max_beta,
+            'kalman_delta': args.kalman_delta,
+            'kalman_r_var': args.kalman_r_var,
+            'kelly_fraction_limit': args.kelly_fraction,
+            'time_stop': args.time_stop,
+            'taker_fee': args.taker_fee,
+            'slippage_bps': args.slippage_bps
         }
     }])
 
-    final_snapshot, nav_hist = run_capture(engine, rows, slippage_bps=args.slippage_bps)
+    final_snapshot, nav_hist = run_capture(engine, rows, slippage_bps=args.slippage_bps, verbose=args.verbose)
     print_metrics(final_snapshot, nav_history=nav_hist, verbose=args.verbose)

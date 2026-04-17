@@ -191,6 +191,8 @@ class StatArbModel:
     def _evaluate(self, timestamp: int):
         # Need both legs to have data
         if self.target_price == 0.0 or self.feature_price == 0.0:
+            # Emit debug info so replay logs how often we skip due to missing legs
+            self.bus.publish('LOG', {'level': 'DEBUG', 'event': 'MODEL_SKIP', 'message': f'Missing leg price (target: {self.target_price}, feature: {self.feature_price})', 'timestamp': timestamp})
             return
 
         # Use Log Prices for structural stability
@@ -213,7 +215,12 @@ class StatArbModel:
 
         # Minimum warmup period
         if self.bivariate.count < min(50, self.w_beta // 4):
+            # Publish warmup debug so backtests show warmup progress
+            self.bus.publish('LOG', {'level': 'DEBUG', 'event': 'MODEL_WARMUP', 'message': f'Kalman warmup {self.bivariate.count}/{min(50, self.w_beta // 4)}', 'timestamp': timestamp})
             return
+
+        if not self.is_ready:
+            self.bus.publish('LOG', {'level': 'INFO', 'message': f'Model warmed up. Beta: {beta_prior:.4f}'})
 
         self.is_ready = True
         self.beta = beta_prior  # expose the *prior* beta (causal)
@@ -248,6 +255,13 @@ class StatArbModel:
             'spread_std': self.spread_stats.std(),
             'z_score': self.z_score,
             'is_ready': self.is_ready
+        })
+        # Also emit a trace log for the model update (compact decision payload)
+        self.bus.publish('LOG', {
+            'level': 'DEBUG',
+            'event': 'MODEL_UPDATE_TRACE',
+            'message': f'beta={self.beta:.6f}, z={self.z_score:.6f}, spread={self.spread:.6e}',
+            'timestamp': timestamp
         })
 
     def reset(self):
@@ -302,6 +316,7 @@ class SignalGenerator:
         self.circuit_breaker_tripped = False
         self.initial_capital = self.portfolio.cash
         self.anchored_mean = None
+        self.is_position_open = False
         self.anchored_std = None
         self.min_beta = 0.5
         self.max_beta = 1.5
@@ -311,8 +326,17 @@ class SignalGenerator:
         self.bus.subscribe('REGIME_CHANGE', self._on_regime_change)
         self.bus.subscribe('UPDATE_STRATEGY_PARAMS', self._on_update_params)
         self.bus.subscribe('FUNDING_RATE_UPDATE', self._on_funding_rate_update)
+        self.bus.subscribe('ORDER_UPDATE', self._on_order_update)
+        
+    def _on_order_update(self, payload: dict):
+        target_pos = self.portfolio.positions.get(self.target, 0.0)
+        feature_pos = self.portfolio.positions.get(self.feature, 0.0)
+        if abs(target_pos) < 1e-8 and abs(feature_pos) < 1e-8:
+            self.is_position_open = False
 
     def _on_update_params(self, payload: dict):
+        if 'taker_fee' in payload:
+            self.taker_fee = float(payload['taker_fee'])
         if 'sigma_threshold' in payload:
             self.entry_threshold = float(payload['sigma_threshold'])
         if 'min_entry_spread_bps' in payload:
@@ -345,8 +369,9 @@ class SignalGenerator:
         estimated hold time ≈ half_life_seconds (capped at one 8-hour funding period)
         funding_drag ≈ abs(funding_rate) × (hold / (8h)) × 10_000
         """
-        taker_entry_fee_bps = self.taker_fee * 10_000  # 5 bps
-        taker_exit_fee_bps = self.taker_fee * 10_000   # 5 bps
+        # 2 legs per entry (target + feature) and 2 legs per exit
+        taker_entry_fee_bps = (self.taker_fee * 2) * 10_000
+        taker_exit_fee_bps = (self.taker_fee * 2) * 10_000
         hold_s = min(self.half_life_seconds, 8 * 3600)
         funding_bps = abs(self.current_funding_rate) * (hold_s / (8 * 3600)) * 10_000
         hurdle = taker_entry_fee_bps + taker_exit_fee_bps + self.slippage_bps + funding_bps
@@ -401,8 +426,32 @@ class SignalGenerator:
         # Dynamic cost hurdle replaces static min_profit_bps
         dynamic_hurdle_bps = self._compute_dynamic_hurdle_bps()
 
-        expected_edge_long_bps = abs(long_z_score) * spread_std * 10_000 - (self.taker_fee * 2) * 10_000
-        expected_edge_short_bps = abs(short_z_score) * spread_std * 10_000 - (self.taker_fee * 2) * 10_000
+        # Emit a structured decision log to help debugging: include all key numbers
+        self.bus.publish('LOG', {
+            'level': 'DEBUG',
+            'event': 'DECISION',
+            'message': '',
+            'timestamp': payload.get('timestamp', 0),
+            'beta': float(beta),
+            'abs_beta': abs(float(beta)),
+            'z_score_mid': float(z_score),
+            'long_z': float(long_z_score),
+            'short_z': float(short_z_score),
+            'spread_std': float(spread_std),
+            'hurdle_bps': float(dynamic_hurdle_bps),
+            'edge_long_bps': float(expected_edge_long_bps),
+            'edge_short_bps': float(expected_edge_short_bps),
+            'net_delta': float(current_net_delta),
+            'current_spread_bps': float(current_spread_bps),
+            'variance': float(variance),
+            'is_toxic': bool(self.is_toxic),
+            'is_beta_valid': bool(is_beta_valid),
+            'can_enter': bool(can_enter),
+        })
+
+        # Net edge = Gross edge (in bps) - total cost hurdle (in bps)
+        expected_edge_long_bps = abs(long_z_score) * spread_std * 10_000 - dynamic_hurdle_bps
+        expected_edge_short_bps = abs(short_z_score) * spread_std * 10_000 - dynamic_hurdle_bps
 
         # Entry signals (only when edge clears the dynamic hurdle)
         current_net_delta = self.portfolio.get_net_delta(target_ask, feature_bid)
@@ -411,39 +460,59 @@ class SignalGenerator:
         variance = spread_std ** 2
         c_deg = max(0.0, 1.0 - (self.latest_pvalue / self.toxicity_threshold))
 
-        is_beta_valid = (self.min_beta <= beta <= self.max_beta)
+        is_beta_valid = (self.min_beta <= abs(beta) <= self.max_beta)
+        
+        target_pos = self.portfolio.positions.get(self.target, 0.0)
+        can_enter = (abs(target_pos) < 1e-8) and not self.is_position_open
 
-        if not self.is_toxic and variance > 1e-12 and is_beta_valid:
+        has_signal = (long_z_score < -self.entry_threshold) or (short_z_score > self.entry_threshold)
+        if has_signal and can_enter:
+            if self.is_toxic:
+                self.bus.publish('LOG', {'level': 'DEBUG', 'message': 'Entry ignored: Regime is toxic.'})
+            elif not is_beta_valid:
+                self.bus.publish('LOG', {'level': 'DEBUG', 'message': f'Entry ignored: abs(Beta) {abs(beta):.4f} invalid (min:{self.min_beta}, max:{self.max_beta}).'})
+            elif variance <= 1e-12:
+                self.bus.publish('LOG', {'level': 'DEBUG', 'message': 'Entry ignored: Variance <= 1e-12.'})
+            elif current_spread_bps < self.min_entry_spread_bps:
+                self.bus.publish('LOG', {'level': 'DEBUG', 'message': f'Entry ignored: Spread {current_spread_bps:.2f} bps < min {self.min_entry_spread_bps} bps.'})
+
+        if not self.is_toxic and variance > 1e-12 and is_beta_valid and can_enter:
             if long_z_score < -self.entry_threshold and current_spread_bps >= self.min_entry_spread_bps:
-                if expected_edge_long_bps > dynamic_hurdle_bps:
+                if expected_edge_long_bps > 0:
                     expected_edge_long_dec = expected_edge_long_bps / 10000.0
                     kelly_long = expected_edge_long_dec / variance
                     half_kelly_long = kelly_long / 2.0
                     target_allocation_long = min(half_kelly_long * c_deg, self.kelly_fraction_limit)
                     expected_target_notional = self.portfolio.cash * target_allocation_long
                     
-                    if abs(current_net_delta + expected_target_notional) < self.max_net_delta and expected_target_notional > 0:
+                    if abs(current_net_delta + expected_target_notional) <= self.max_net_delta and expected_target_notional > 0:
                         self.bus.publish('LOG', {'level': 'INFO', 'message': f'LONG_SPREAD signaled. Edge: {expected_edge_long_bps:.2f} bps, Kelly Notional: {expected_target_notional:.2f}'})
                         self.anchored_mean = spread_mean
                         self.anchored_std = spread_std
+                        self.is_position_open = True
                         self.bus.publish('SIGNAL_GENERATED', {'direction': 'LONG_SPREAD', 'z_score': long_z_score, 'target_notional': expected_target_notional})
-                elif expected_edge_long_bps > 0:
-                    self.bus.publish('LOG', {'level': 'WARN', 'message': f'LONG_SPREAD ignored. Edge {expected_edge_long_bps:.2f} bps < Hurdle {dynamic_hurdle_bps:.2f} bps'})
+                    else:
+                        self.bus.publish('LOG', {'level': 'DEBUG', 'message': f'LONG_SPREAD ignored: max_net_delta exceeded or notional <= 0. Notional: {expected_target_notional:.2f}, Net delta: {current_net_delta:.2f}'})
+                else:
+                    self.bus.publish('LOG', {'level': 'WARN', 'message': f'LONG_SPREAD ignored. Edge {expected_edge_long_bps:.2f} bps <= 0 (Hurdle {dynamic_hurdle_bps:.2f} bps)'})
             elif short_z_score > self.entry_threshold and current_spread_bps >= self.min_entry_spread_bps:
-                if expected_edge_short_bps > dynamic_hurdle_bps:
+                if expected_edge_short_bps > 0:
                     expected_edge_short_dec = expected_edge_short_bps / 10000.0
                     kelly_short = expected_edge_short_dec / variance
                     half_kelly_short = kelly_short / 2.0
                     target_allocation_short = min(half_kelly_short * c_deg, self.kelly_fraction_limit)
                     expected_target_notional = self.portfolio.cash * target_allocation_short
                     
-                    if abs(current_net_delta - expected_target_notional) < self.max_net_delta and expected_target_notional > 0:
+                    if abs(current_net_delta - expected_target_notional) <= self.max_net_delta and expected_target_notional > 0:
                         self.bus.publish('LOG', {'level': 'INFO', 'message': f'SHORT_SPREAD signaled. Edge: {expected_edge_short_bps:.2f} bps, Kelly Notional: {expected_target_notional:.2f}'})
                         self.anchored_mean = spread_mean
                         self.anchored_std = spread_std
+                        self.is_position_open = True
                         self.bus.publish('SIGNAL_GENERATED', {'direction': 'SHORT_SPREAD', 'z_score': short_z_score, 'target_notional': expected_target_notional})
-                elif expected_edge_short_bps > 0:
-                    self.bus.publish('LOG', {'level': 'WARN', 'message': f'SHORT_SPREAD ignored. Edge {expected_edge_short_bps:.2f} bps < Hurdle {dynamic_hurdle_bps:.2f} bps'})
+                    else:
+                        self.bus.publish('LOG', {'level': 'DEBUG', 'message': f'SHORT_SPREAD ignored: max_net_delta exceeded or notional <= 0. Notional: {expected_target_notional:.2f}, Net delta: {current_net_delta:.2f}'})
+                else:
+                    self.bus.publish('LOG', {'level': 'WARN', 'message': f'SHORT_SPREAD ignored. Edge {expected_edge_short_bps:.2f} bps <= 0 (Hurdle {dynamic_hurdle_bps:.2f} bps)'})
 
         # Exit logic
         if self.anchored_mean is not None and self.anchored_std is not None and self.anchored_std > 1e-12:
@@ -688,7 +757,9 @@ class PortfolioManager:
                 self.cash -= (qty * price * sign) + fee
                 self.total_fees_paid += fee
                 
-                self.bus.publish('LOG', {'level': 'INFO', 'message': f"Order FILLED: {side} {qty} {symbol} @ {price}. Fee: {fee:.4f} (Maker: {is_maker})"})
+                position_id = payload.get('position_id', '')
+                pos_str = f" [PosID: {position_id}]" if position_id else ""
+                self.bus.publish('LOG', {'level': 'INFO', 'message': f"Order FILLED: {side} {qty} {symbol} @ {price}. Fee: {fee:.4f} (Maker: {is_maker}){pos_str}"})
 
                 # Accept both timestamp alias forms
                 ts = payload.get('transaction_time',
@@ -703,6 +774,7 @@ class PortfolioManager:
                     'fee': fee,
                     'is_maker': is_maker,
                     'realized_pnl': pnl,
+                    'position_id': position_id,
                 }
                 self.recent_trades.append(trade_record)
                 self.all_historical_trades.append(trade_record)
@@ -761,6 +833,9 @@ class ExecutionManager:
         self.half_life_ms = 3600000.0  # default 1 hour
         
         self.maker_timeout_ms = 5000  # Dynamic based on regime
+        self.current_position_id = None
+        self.time_stop_mode = 'auto'
+        self.time_stop_value = 2.0
         self.maker_order_ts = 0
         self.slippage_bps = 5.0       # Dynamic based on volatility
         self.maker_timeouts = 0
@@ -771,6 +846,31 @@ class ExecutionManager:
         self.bus.subscribe('MODEL_UPDATED', self._on_model_update)
         self.bus.subscribe('TIMER_1S', self._on_timer)
         self.bus.subscribe('REGIME_CHANGE', self._on_regime_change)
+        self.bus.subscribe('UPDATE_STRATEGY_PARAMS', self._on_update_params)
+        
+    def _on_update_params(self, payload: dict):
+        if 'time_stop' in payload:
+            ts_str = str(payload['time_stop']).strip().lower()
+            if ts_str == 'auto':
+                self.time_stop_mode = 'auto'
+            elif ts_str.startswith('x'):
+                self.time_stop_mode = 'multiplier'
+                self.time_stop_value = float(ts_str[1:])
+            elif ts_str.endswith('m'):
+                self.time_stop_mode = 'static'
+                self.time_stop_value = float(ts_str[:-1]) * 60 * 1000
+            elif ts_str.endswith('h'):
+                self.time_stop_mode = 'static'
+                self.time_stop_value = float(ts_str[:-1]) * 3600 * 1000
+            elif ts_str.endswith('s'):
+                self.time_stop_mode = 'static'
+                self.time_stop_value = float(ts_str[:-1]) * 1000
+            else:
+                try:
+                    self.time_stop_mode = 'multiplier'
+                    self.time_stop_value = float(ts_str)
+                except ValueError:
+                    pass
         
     def _on_regime_change(self, payload: dict):
         hl_mins = payload.get('half_life', 50.0)
@@ -812,7 +912,7 @@ class ExecutionManager:
             
         elif direction in ['CLOSE_SPREAD', 'EMERGENCY_CLOSE_SPREAD']:
             if self.state != 'IDLE':
-                self.bus.publish('LOG', {'level': 'INFO', 'message': f'{direction} signaled. Exiting {self.target} & {self.feature}'})
+                self.bus.publish('LOG', {'level': 'INFO', 'message': f'{direction} signaled. Exiting {self.target} & {self.feature} [PosID: {self.current_position_id}]'})
                 self.state = 'CLOSING'
                 
                 target_pos = self.portfolio.positions[self.target]
@@ -827,7 +927,8 @@ class ExecutionManager:
                         'side': side,
                         'type': 'MARKET',
                         'qty': abs(target_pos),
-                        'price': 0.0
+                        'price': 0.0,
+                        'position_id': self.current_position_id
                     })
                 if abs(feature_pos) > 1e-8:
                     side = 'SELL' if feature_pos > 0 else 'BUY'
@@ -838,7 +939,8 @@ class ExecutionManager:
                         'side': side,
                         'type': 'MARKET',
                         'qty': abs(feature_pos),
-                        'price': 0.0
+                        'price': 0.0,
+                        'position_id': self.current_position_id
                     })
 
     def _enter_spread(self, target_side: str, target_notional: float):
@@ -847,6 +949,8 @@ class ExecutionManager:
             
         self.state = 'HEDGED'
         self.position_entry_ts = 0
+        import uuid
+        self.current_position_id = str(uuid.uuid4())[:8]
         
         if self.latest_beta >= 0:
             feature_side = 'SELL' if target_side == 'BUY' else 'BUY'
@@ -866,7 +970,8 @@ class ExecutionManager:
             'side': target_side,
             'type': 'MARKET',
             'qty': target_qty,
-            'price': 0.0
+            'price': 0.0,
+            'position_id': self.current_position_id
         })
         
         self.bus.publish('OUTBOUND_INTENT', {
@@ -876,7 +981,8 @@ class ExecutionManager:
             'side': feature_side,
             'type': 'MARKET',
             'qty': feature_qty,
-            'price': 0.0
+            'price': 0.0,
+            'position_id': self.current_position_id
         })
 
     def _on_timer(self, payload: dict):
@@ -885,8 +991,16 @@ class ExecutionManager:
         # Time-Stop: Check if we've held the position drastically longer than the mean-reversion expected time
         if self.state == 'HEDGED' and self.position_entry_ts > 0:
             hold_time_ms = ts - self.position_entry_ts
-            if hold_time_ms > 2.0 * self.half_life_ms:
-                self.bus.publish('LOG', {'level': 'WARN', 'message': f'Time-stop triggered. Held for {hold_time_ms/1000:.1f}s (half-life: {self.half_life_ms/1000:.1f}s)'})
+            
+            if self.time_stop_mode == 'multiplier':
+                max_hold_ms = self.half_life_ms * self.time_stop_value
+            elif self.time_stop_mode == 'static':
+                max_hold_ms = self.time_stop_value
+            else: # auto
+                max_hold_ms = max(self.half_life_ms * 2.0, 3600000.0) # min 1 hour
+                
+            if hold_time_ms > max_hold_ms:
+                self.bus.publish('LOG', {'level': 'WARN', 'message': f'Time-stop triggered. Held for {hold_time_ms/1000:.1f}s (max: {max_hold_ms/1000:.1f}s) [PosID: {self.current_position_id}]'})
                 self.bus.publish('SIGNAL_GENERATED', {'direction': 'EMERGENCY_CLOSE_SPREAD'})
 
     def _on_order_update(self, payload: dict):
@@ -901,6 +1015,7 @@ class ExecutionManager:
             if abs(target_pos) < 1e-8 and abs(feature_pos) < 1e-8:
                 self.state = 'IDLE'
                 self.position_entry_ts = 0
+                self.current_position_id = None
 
 # ==========================================
 # 6. ENGINE ENTRY POINT
