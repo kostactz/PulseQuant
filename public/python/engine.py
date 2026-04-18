@@ -357,6 +357,8 @@ class SignalGenerator:
             self.max_net_delta = float(payload['max_net_delta'])
         if 'slippage_bps' in payload:
             self.slippage_bps = float(payload['slippage_bps'])
+        if 'maker_fee' in payload:
+            self.maker_fee = float(payload['maker_fee'])
         if 'kelly_fraction_limit' in payload:
             self.kelly_fraction_limit = float(payload['kelly_fraction_limit'])
         if 'toxicity_threshold' in payload:
@@ -745,7 +747,16 @@ class PortfolioManager:
 
         self.bus.subscribe('ORDER_UPDATE', self._on_order_update)
         self.bus.subscribe('FUNDING_RATE_UPDATE', self._on_funding_rate_update)
+        self.bus.subscribe('UPDATE_STRATEGY_PARAMS', self._on_update_params)
+        self.maker_fee = 0.0000
+        self.taker_fee = 0.0005
         
+    def _on_update_params(self, payload: dict):
+        if 'maker_fee' in payload:
+            self.maker_fee = float(payload['maker_fee'])
+        if 'taker_fee' in payload:
+            self.taker_fee = float(payload['taker_fee'])
+
     def _on_funding_rate_update(self, payload: dict):
         """Deduct (or credit) funding payments for any open position.
 
@@ -780,7 +791,7 @@ class PortfolioManager:
             # Accept is_maker from replay EXECUTION_REPORT
             is_maker = bool(payload.get('is_maker', False))
 
-            fee_rate = 0.0002 if is_maker else 0.0005
+            fee_rate = self.maker_fee if is_maker else self.taker_fee
             notional = qty * price
             fee = notional * fee_rate
 

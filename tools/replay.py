@@ -347,6 +347,8 @@ if __name__ == '__main__':
                         help="Feature asset symbol")
     parser.add_argument('--slippage-bps', type=float, default=10.0,
                         help="Market-order slippage in basis points (default 10 bps = 0.10%%)")
+    parser.add_argument('--maker-fee', type=float, default=0.0,
+                        help="Maker fee (default 0.0 = 0 bps)")
     parser.add_argument('--taker-fee', type=float, default=0.0005,
                         help="Taker fee (default 0.0005 = 5 bps)")
     parser.add_argument('--sigma-threshold', type=float, default=2.0,
@@ -425,6 +427,7 @@ if __name__ == '__main__':
             'kalman_r_var': args.kalman_r_var,
             'kelly_fraction_limit': args.kelly_fraction,
             'time_stop': args.time_stop,
+            'maker_fee': args.maker_fee,
             'taker_fee': args.taker_fee,
             'slippage_bps': args.slippage_bps
         }
