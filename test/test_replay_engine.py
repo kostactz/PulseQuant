@@ -201,6 +201,32 @@ class TestReplayMarketSlippage:
         assert 'transactionTime' in fill, "transactionTime missing"
         assert fill['transaction_time'] == fill['transactionTime'] == ts
 
+    def test_zero_fees_from_update_strategy_params(self):
+        """UPDATE_STRATEGY_PARAMS should propagate zero maker/taker fees into accounting."""
+        engine = self.engine_mod.TradingEngine(target='AAA', feature='BBB')
+        engine.process_events([{
+            'type': 'UPDATE_STRATEGY_PARAMS',
+            'data': {'maker_fee': 0.0, 'taker_fee': 0.0}
+        }])
+
+        engine.process_events([{
+            'type': 'EXECUTION_REPORT',
+            'data': {
+                'order_id': 'fee-test',
+                'status': 'FILLED',
+                'symbol': 'AAA',
+                'side': 'BUY',
+                'filled_qty': 1.0,
+                'price': 100.0,
+                'is_maker': False,
+                'transaction_time': 123456,
+                'transactionTime': 123456,
+            }
+        }])
+
+        assert engine.portfolio.total_fees_paid == 0.0
+        assert engine.portfolio.cash == 100000.0 - 100.0
+
 
 # ---------------------------------------------------------------------------
 # Test 2 — Limit order trade-through
