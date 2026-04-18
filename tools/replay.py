@@ -309,6 +309,12 @@ def print_metrics(snapshot, nav_history=None, verbose=False):
     print(f"Hit Ratio:           {hit_ratio:.2%}")
     print(f"Win/Loss Ratio:      {wl_ratio:.2f} ({win_trades} W / {loss_trades} L)")
     print(f"Annualized Sharpe:   {sharpe:.2f}")
+
+    decision_counts = snapshot.get('decision_counts', {})
+    if decision_counts:
+        print("\n--- Decision Summary ---")
+        for reason, count in sorted(decision_counts.items()):
+            print(f"{reason.replace('_', ' ').title()}: {count}")
     
     if verbose:
         all_trades = snapshot.get('all_historical_trades', [])
@@ -376,6 +382,7 @@ if __name__ == '__main__':
     )
 
     # Persistent logger to capture all engine LOG events (including async)
+    import json as _json
     def _persistent_replay_logger(payload):
         level = payload.get('level', 'INFO')
         msg = payload.get('message', '')
@@ -388,12 +395,23 @@ if __name__ == '__main__':
         else:
             print(f"{prefix}{level}: {msg}")
 
-    # Subscribe the persistent logger before replay begins so all logs are captured
-    try:
-        engine.bus.subscribe('LOG', _persistent_replay_logger)
-    except Exception:
-        # Defensive: if engine bus not ready, ignore
-        pass
+        # If payload contains structured fields, print them as JSON for full diagnostics
+        try:
+            # Avoid overly small dumps for trivial messages
+            extra_keys = {k: v for k, v in payload.items() if k not in ('level', 'message', 'timestamp')}
+            if extra_keys:
+                print(prefix + _json.dumps(payload, sort_keys=True))
+        except Exception:
+            # Best-effort fallback
+            print(prefix + str(payload))
+
+    # Subscribe the persistent logger only when verbose mode is enabled.
+    if args.verbose:
+        try:
+            engine.bus.subscribe('LOG', _persistent_replay_logger)
+        except Exception:
+            # Defensive: if engine bus not ready, ignore
+            pass
 
     # Apply user-specified strategy parameters
     engine.process_events([{
