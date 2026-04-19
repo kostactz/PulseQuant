@@ -256,14 +256,6 @@ class StatArbModel:
             'z_score': self.z_score,
             'is_ready': self.is_ready
         })
-        # Also emit a trace log for the model update (compact decision payload)
-        self.bus.publish('LOG', {
-            'level': 'DEBUG',
-            'event': 'MODEL_UPDATE_TRACE',
-            'message': f'beta={self.beta:.6f}, z={self.z_score:.6f}, spread={self.spread:.6e}',
-            'timestamp': timestamp
-        })
-
     def reset(self):
         self.last_ts = 0
         self.bivariate.reset()
@@ -475,41 +467,8 @@ class SignalGenerator:
 
         has_signal = (long_z_score < -self.entry_threshold) or (short_z_score > self.entry_threshold)
 
-        # Emit a structured decision log to help debugging: include all key numbers
-        self.bus.publish('LOG', {
-            'level': 'DEBUG',
-            'event': 'DECISION',
-            'message': '',
-            'timestamp': payload.get('timestamp', 0),
-            'beta': float(beta),
-            'abs_beta': abs(float(beta)),
-            'z_score_mid': float(z_score),
-            'long_z': float(long_z_score),
-            'short_z': float(short_z_score),
-            'spread_std': float(spread_std),
-            'hurdle_bps': float(dynamic_hurdle_bps),
-            'edge_long_bps': float(expected_edge_long_bps),
-            'edge_short_bps': float(expected_edge_short_bps),
-            'net_delta': float(current_net_delta),
-            'current_spread_bps': float(current_spread_bps),
-            'variance': float(variance),
-            'is_toxic': bool(self.is_toxic),
-            'is_beta_valid': bool(is_beta_valid),
-            'can_enter': bool(can_enter),
-            'has_signal': bool(has_signal),
-        })
         if not has_signal:
             self.decision_counters['no_signal'] += 1
-            self.bus.publish('LOG', {
-                'level': 'DEBUG',
-                'event': 'DECISION_SKIP',
-                'message': 'No entry signal.',
-                'timestamp': payload.get('timestamp', 0),
-                'z_score_mid': float(z_score),
-                'long_z': float(long_z_score),
-                'short_z': float(short_z_score),
-                'entry_threshold': float(self.entry_threshold),
-            })
         elif not can_enter:
             self.decision_counters['cannot_enter'] += 1
             self.bus.publish('LOG', {
