@@ -40,7 +40,24 @@ export function useMarketData(connectEnabled: boolean = true, tradingMode: Tradi
   const orderManagerRef = useRef<OrderManager | null>(null);
   const currentAdapterMode = useRef<TradingMode | null>(null);
 
-  const lastRenderTimeRef = useRef(0);
+  const scheduledFlushRef = useRef(false);
+  const flushTimeoutRef = useRef<number | null>(null);
+  const flushCounterRef = useRef(0);
+
+  const scheduleTickFlush = useCallback(() => {
+    if (scheduledFlushRef.current) return;
+    scheduledFlushRef.current = true;
+    flushTimeoutRef.current = window.setTimeout(() => {
+      setOrderBooks({ ...orderBookRefs.current });
+      setLatestTicks({ ...latestTickRefs.current });
+      scheduledFlushRef.current = false;
+      flushTimeoutRef.current = null;
+      flushCounterRef.current += 1;
+      if (flushCounterRef.current % 10 === 0) {
+        logger.debug(`[useMarketData] tick flush #${flushCounterRef.current} executed`);
+      }
+    }, 100);
+  }, []);
 
   useEffect(() => {
     // For PAPER mode, connect to Mainnet (isTestnet = false) but disable User Data Stream.
@@ -96,13 +113,7 @@ export function useMarketData(connectEnabled: boolean = true, tradingMode: Tradi
           recordedTicks.current.push(tick);
         }
         
-        // Use strict time-based throttling for UI rendering (e.g., max 10 FPS = 100ms)
-        const now = Date.now();
-        if (now - lastRenderTimeRef.current >= 100) {
-          setOrderBooks({ ...orderBookRefs.current });
-          setLatestTicks({ ...latestTickRefs.current });
-          lastRenderTimeRef.current = now;
-        }
+        scheduleTickFlush();
       });
     }
 
@@ -255,6 +266,11 @@ export function useMarketData(connectEnabled: boolean = true, tradingMode: Tradi
     return () => {
       // Cleanup on unmount or dependency change
       isStale = true;
+      if (flushTimeoutRef.current !== null) {
+        window.clearTimeout(flushTimeoutRef.current);
+        flushTimeoutRef.current = null;
+        scheduledFlushRef.current = false;
+      }
       void (async () => {
         try {
           await adapter.disconnect();
