@@ -58,10 +58,33 @@ def import_engine(path='public/python/engine.py'):
 
 
 
+def _should_print_verbose_log(log):
+    message = str(log.get('message', '')).strip()
+    if not message:
+        return False
+
+    important_phrases = [
+        'Order FILLED',
+        'signaled',
+        'Entering LONG_SPREAD',
+        'Entering SHORT_SPREAD',
+        'Exiting',
+        'CIRCUIT BREAKER TRIPPED',
+        'Time-stop triggered',
+    ]
+
+    for phrase in important_phrases:
+        if phrase in message:
+            return True
+    return False
+
+
 def _dispatch_to_engine(engine, events, verbose=False, ts=None):
     result = engine.process_events(events)
     if result and result.get('logs') and verbose:
         for log in result['logs']:
+            if not _should_print_verbose_log(log):
+                continue
             t_str = f"[{ts}] " if ts else ""
             print(f"{t_str}{log.get('level', 'INFO')}: {log.get('message')}")
     return result
@@ -386,6 +409,9 @@ if __name__ == '__main__':
     # Persistent logger to capture all engine LOG events (including async)
     import json as _json
     def _persistent_replay_logger(payload):
+        if not _should_print_verbose_log(payload):
+            return
+
         level = payload.get('level', 'INFO')
         msg = payload.get('message', '')
         ts = payload.get('timestamp') or ''
