@@ -23,7 +23,7 @@ export const OrderBookDepth: React.FC<OrderBookDepthProps> = ({ bids, asks, curr
   const maxVol = Math.max(maxBidVol, maxAskVol);
 
   return (
-    <div className="flex flex-col h-full text-sm font-mono">
+    <div className="flex flex-col h-full text-sm font-mono min-h-0">
       {/* Header */}
       <div className="grid grid-cols-3 text-gray-500 font-medium pb-2 border-b border-gray-200 mb-2 text-xs uppercase tracking-wider shrink-0">
         <div className="text-left">Size</div>
@@ -31,7 +31,7 @@ export const OrderBookDepth: React.FC<OrderBookDepthProps> = ({ bids, asks, curr
         <div className="text-right">Size</div>
       </div>
 
-      <div className="flex-1 flex flex-col justify-center">
+      <div className="flex-1 flex flex-col justify-center min-h-0 overflow-y-auto">
         {/* Asks (Sell Orders) - Reversed to show lowest ask at the bottom */}
         <div className="flex flex-col-reverse gap-[2px]">
           {asks.map((ask, i) => {

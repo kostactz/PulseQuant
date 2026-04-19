@@ -100,6 +100,9 @@ export default function Dashboard() {
   const [showCodeModal, setShowCodeModal] = useState(false);
   const [engineCode, setEngineCode] = useState('');
 
+  // Mobile view tabs: 'sim' = top simulator/metrics, 'chart' = realtime chart, 'books' = orderbooks+trades
+  const [mobileView, setMobileView] = useState<'sim' | 'chart' | 'books'>('chart');
+
   const [targetAsset, setTargetAsset] = useState('ORDIUSDC');
   const [featureAsset, setFeatureAsset] = useState('SUIUSDC');
   const [isFetchingHistory, setIsFetchingHistory] = useState(false);
@@ -295,13 +298,13 @@ export default function Dashboard() {
         />
       )}
       
-      <div className={`max-w-6xl mx-auto space-y-6 ${!isUnlocked ? 'blur-sm pointer-events-none' : ''}`}>
-        <header className="flex items-center justify-between border-b border-gray-200 pb-4">
+      <div className={`max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 space-y-6 ${!isUnlocked ? 'blur-sm pointer-events-none' : ''}`}>
+        <header className="flex flex-col sm:flex-row sm:items-center sm:justify-between border-b border-gray-200 pb-4 gap-4">
           <div>
             <h1 className="text-2xl font-semibold tracking-tight">PulseQuant Dashboard</h1>
             <p className="text-sm text-gray-500">Stat Arb Engine via Pyodide WASM</p>
           </div>
-          <div className="flex items-center gap-4">
+          <div className="flex flex-wrap items-center gap-4">
             {tradingMode !== 'PAPER' && (
               <button
                 onClick={() => {
@@ -312,7 +315,7 @@ export default function Dashboard() {
                 title="Lock Application"
               >
                 <Lock className="w-4 h-4" />
-                Lock
+                <span className="hidden sm:inline">Lock</span>
               </button>
             )}
             {(tradingMode === 'TESTNET' || tradingMode === 'MAINNET') && getRuntimeCredentials() && (
@@ -325,7 +328,7 @@ export default function Dashboard() {
                 className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-semibold transition-all shadow-sm bg-red-100 text-red-700 border border-red-200 hover:bg-red-200"
                 title="Rotate Credentials"
               >
-                Rotate Credentials
+                <span className="hidden sm:inline">Rotate Credentials</span>
               </button>
             )}
             <div className="flex items-center bg-gray-100 p-1 rounded-lg border border-gray-200">
@@ -338,7 +341,7 @@ export default function Dashboard() {
                 }`}
               >
                 <Bot className="w-4 h-4" />
-                Paper
+                <span className="hidden sm:inline">Paper</span>
               </button>
               <button
                 onClick={() => handleModeSwitch('TESTNET')}
@@ -349,7 +352,7 @@ export default function Dashboard() {
                 }`}
               >
                 <Activity className="w-4 h-4" />
-                Testnet
+                <span className="hidden sm:inline">Testnet</span>
               </button>
               <button
                 onClick={() => handleModeSwitch('MAINNET')}
@@ -360,15 +363,15 @@ export default function Dashboard() {
                 }`}
               >
                 <Zap className="w-4 h-4" />
-                Mainnet
+                <span className="hidden sm:inline">Mainnet</span>
               </button>
             </div>
-            <div className="flex items-center gap-3 ml-2">
-              <div className={`w-3 h-3 rounded-full ${isReady ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`} />
-              <span className="text-sm font-medium text-gray-700">
-                {isReady ? 'Engine Ready' : 'Booting Pandas...'}
-              </span>
-            </div>
+             <div className="flex items-center gap-3 ml-2">
+               <div className={`w-3 h-3 rounded-full ${isReady ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`} />
+               <span className="text-sm font-medium text-gray-700">
+                 {isReady ? 'Engine Ready' : 'Booting Pandas...'}
+               </span>
+             </div>
           </div>
         </header>
 
@@ -411,9 +414,9 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* Control Bar */}
-        <div className="flex flex-wrap items-center justify-between bg-white border border-gray-200 shadow-sm p-4 rounded-xl gap-4">
-          <div className="flex items-center gap-2">
+         {/* Control Bar */}
+         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between bg-white border border-gray-200 shadow-sm p-4 rounded-xl gap-4">
+           <div className="flex flex-wrap items-center gap-2">
             <button
               onClick={() => setIsPlaying(!isPlaying)}
               disabled={!isReady}
@@ -423,7 +426,17 @@ export default function Dashboard() {
                   : 'bg-emerald-500/20 text-emerald-500 hover:bg-emerald-500/30'
               }`}
             >
-              {isPlaying ? <><Pause className="w-4 h-4" /> Pause Feed</> : <><Play className="w-4 h-4" /> Resume Feed</>}
+              {isPlaying ? (
+                <span className="flex items-center">
+                  <Pause className="w-4 h-4" />
+                  <span className="hidden sm:inline">Pause Feed</span>
+                </span>
+              ) : (
+                <span className="flex items-center">
+                  <Play className="w-4 h-4" />
+                  <span className="hidden sm:inline">Resume Feed</span>
+                </span>
+              )}
             </button>
             <button
               onClick={toggleRecording}
@@ -435,7 +448,7 @@ export default function Dashboard() {
               }`}
               title="Capture market data to a JSONL file"
             >
-              <Video className="w-4 h-4" /> {isRecording ? 'Recording...' : 'Record Session'}
+              <Video className="w-4 h-4" /> <span className="hidden sm:inline">{isRecording ? 'Recording...' : 'Record Session'}</span>
             </button>
             <button
               onClick={() => {
@@ -445,40 +458,58 @@ export default function Dashboard() {
               disabled={!isReady}
               className="flex items-center gap-2 px-4 py-2 rounded-lg font-medium bg-gray-100 text-gray-700 hover:bg-gray-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <Trash2 className="w-4 h-4" /> Clear Data
+              <Trash2 className="w-4 h-4" /> <span className="hidden sm:inline">Clear Data</span>
             </button>
             <button
               onClick={clearCache}
               className="flex items-center gap-2 px-4 py-2 rounded-lg font-medium bg-gray-100 text-gray-700 hover:bg-gray-200 transition-colors"
               title="Clear Pyodide WASM Cache"
             >
-              <RefreshCw className="w-4 h-4" /> Clear Cache
+              <RefreshCw className="w-4 h-4" /> <span className="hidden sm:inline">Clear Cache</span>
             </button>
           </div>
           
-          <div className="flex items-center gap-4 text-sm text-gray-500">
-            <div className="flex items-center gap-2">
+           <div className="flex items-center gap-4 text-sm text-gray-500">
+             <div className="flex items-center gap-2">
               <Settings2 className="w-4 h-4" />
               <span>UI Refresh Rate:</span>
             </div>
-            <input 
-              type="range" 
-              min="100" 
-              max="2000" 
-              step="100" 
-              value={uiRefreshInterval} 
-              onChange={(e) => setUiRefreshInterval(Number(e.target.value))}
-              className="w-32 accent-blue-500"
-            />
-            <span className="font-mono w-12 text-right">{uiRefreshInterval}ms</span>
+             <input 
+               type="range" 
+               min="100" 
+               max="2000" 
+               step="100" 
+               value={uiRefreshInterval} 
+               onChange={(e) => setUiRefreshInterval(Number(e.target.value))}
+               className="w-32 accent-blue-500"
+             />
+             <span className="font-mono w-12 text-right">{uiRefreshInterval}ms</span>
           </div>
         </div>
 
         {currentState ? (
           <div className="space-y-6 animate-in fade-in duration-700">
-            {/* Stat Arb Trading Simulator Panel */}
-            <div className="bg-white border border-gray-200 shadow-sm p-5 rounded-xl">
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
+            {/* Mobile tab bar (small screens only) */}
+            <div className="sm:hidden flex items-center justify-around bg-white p-2 rounded-lg shadow-sm">
+              <button onClick={() => setMobileView('sim')} className={`flex flex-col items-center text-xs py-1 px-3 rounded ${mobileView === 'sim' ? 'bg-blue-50 text-blue-700' : 'text-gray-500'}`}>
+                <Briefcase className="w-4 h-4" />
+                <span>Sim</span>
+              </button>
+              <button onClick={() => setMobileView('chart')} className={`flex flex-col items-center text-xs py-1 px-3 rounded ${mobileView === 'chart' ? 'bg-blue-50 text-blue-700' : 'text-gray-500'}`}>
+                <Maximize className="w-4 h-4" />
+                <span>Chart</span>
+              </button>
+              <button onClick={() => setMobileView('books')} className={`flex flex-col items-center text-xs py-1 px-3 rounded ${mobileView === 'books' ? 'bg-blue-50 text-blue-700' : 'text-gray-500'}`}>
+                <Activity className="w-4 h-4" />
+                <span>Books</span>
+              </button>
+            </div>
+
+            {/* Top simulator & metrics (hidden on mobile unless selected) */}
+            <div className={`sm:block ${mobileView === 'sim' ? 'block' : 'hidden'}`}>
+              {/* Stat Arb Trading Simulator Panel */}
+              <div className="bg-white border border-gray-200 shadow-sm p-5 rounded-xl">
+             <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
                 <div className="flex items-center gap-3">
                   <div className="p-2 bg-blue-100 rounded-lg">
                     <Briefcase className="w-5 h-5 text-blue-600" />
@@ -514,7 +545,7 @@ export default function Dashboard() {
                   </div>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-6">
+                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
                   <div>
                     <div className="text-xs text-gray-400 uppercase tracking-wider font-semibold mb-1">Cash</div>
                     <div className="font-mono text-gray-700">${currentState.capital?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || '100,000.00'}</div>
@@ -528,25 +559,45 @@ export default function Dashboard() {
                   <div>
                     <div className="text-xs text-gray-400 uppercase tracking-wider font-semibold mb-1">Hedge Ratio (Beta)</div>
                     <div className="font-mono text-gray-700">
-                      {currentState.spread_metrics?.beta != null ? currentState.spread_metrics.beta.toFixed(4) : <span className="text-gray-400 flex items-center gap-1"><div className="w-3 h-3 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" /> Calc...</span>}
+                      {currentState.spread_metrics?.beta != null ? currentState.spread_metrics.beta.toFixed(4) : (
+                        <span className="text-gray-400 flex items-center gap-1">
+                          <div className="w-3 h-3 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" />
+                          <span>Calc...</span>
+                        </span>
+                      )}
                     </div>
                   </div>
                   <div>
                     <div className="text-xs text-gray-400 uppercase tracking-wider font-semibold mb-1">Hurst Exponent</div>
                     <div className="font-mono text-gray-700">
-                      {currentState.spread_metrics?.hurst != null ? currentState.spread_metrics.hurst.toFixed(4) : <span className="text-gray-400 flex items-center gap-1"><div className="w-3 h-3 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" /> Calc...</span>}
+                      {currentState.spread_metrics?.hurst != null ? currentState.spread_metrics.hurst.toFixed(4) : (
+                        <span className="text-gray-400 flex items-center gap-1">
+                          <div className="w-3 h-3 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" />
+                          <span>Calc...</span>
+                        </span>
+                      )}
                     </div>
                   </div>
                   <div>
                     <div className="text-xs text-gray-400 uppercase tracking-wider font-semibold mb-1">Half-life (mins)</div>
                     <div className="font-mono text-gray-700">
-                      {currentState.spread_metrics?.half_life != null ? currentState.spread_metrics.half_life.toFixed(1) : <span className="text-gray-400 flex items-center gap-1"><div className="w-3 h-3 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" /> Calc...</span>}
+                      {currentState.spread_metrics?.half_life != null ? currentState.spread_metrics.half_life.toFixed(1) : (
+                        <span className="text-gray-400 flex items-center gap-1">
+                          <div className="w-3 h-3 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" />
+                          <span>Calc...</span>
+                        </span>
+                      )}
                     </div>
                   </div>
                   <div>
                     <div className="text-xs text-gray-400 uppercase tracking-wider font-semibold mb-1">ADF p-value</div>
                     <div className="font-mono text-gray-700">
-                      {currentState.spread_metrics?.adf_pvalue != null ? currentState.spread_metrics.adf_pvalue.toFixed(4) : <span className="text-gray-400 flex items-center gap-1"><div className="w-3 h-3 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" /> Calc...</span>}
+                      {currentState.spread_metrics?.adf_pvalue != null ? currentState.spread_metrics.adf_pvalue.toFixed(4) : (
+                        <span className="text-gray-400 flex items-center gap-1">
+                          <div className="w-3 h-3 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" />
+                          <span>Calc...</span>
+                        </span>
+                      )}
                     </div>
                   </div>
                   <div>
@@ -584,13 +635,13 @@ export default function Dashboard() {
                         : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                     }`}
                   >
-                    <Bot className="w-4 h-4" /> {isAutoTrading ? 'Auto-Trading ON' : 'Auto-Trade'}
+                    <span className="inline-flex items-center gap-2"><Bot className="w-4 h-4" /> <span>{isAutoTrading ? 'Auto-Trading ON' : 'Auto-Trade'}</span></span>
                   </button>
                 </div>
               </div>
 
               {/* Strategy Settings & Positions */}
-              <div className="mt-4 pt-4 border-t border-gray-200 flex flex-wrap items-start justify-between gap-4">
+               <div className="mt-4 pt-4 border-t border-gray-200 flex flex-wrap items-start justify-between gap-4">
                 <div className="flex flex-col gap-2 flex-1">
                   <span className="text-sm font-medium text-gray-500">Active Positions:</span>
                   <div className="flex flex-wrap gap-3">
@@ -598,8 +649,8 @@ export default function Dashboard() {
                       if (Math.abs(pos as number) < 1e-8) return null;
                       const avgEntry = currentState.avg_entry_prices?.[sym] || 0;
                       const upnl = currentState.unrealized_pnl?.[sym] || 0;
-                      return (
-                        <div key={sym} className="flex flex-col bg-gray-50 px-3 py-2 rounded-lg border border-gray-200 shadow-sm min-w-[140px]">
+                        return (
+                          <div key={sym} className="flex flex-col bg-gray-50 px-3 py-2 rounded-lg border border-gray-200 shadow-sm min-w-0 w-full sm:w-auto sm:min-w-[140px]">
                           <div className="flex justify-between items-center mb-1">
                             <span className="text-xs font-bold text-gray-700">{sym}</span>
                             <span className={`font-mono text-sm font-semibold ${(pos as number) > 0 ? 'text-emerald-600' : 'text-red-600'}`}>
@@ -625,7 +676,7 @@ export default function Dashboard() {
                   </div>
                 </div>
                 
-                <div className="flex flex-col items-end gap-3 min-w-[200px]">
+                 <div className="flex flex-col items-end gap-3 min-w-0 w-full sm:w-auto sm:min-w-[200px]">
                   <div className="flex items-center gap-3">
                     <span className="text-sm font-medium text-gray-500">Trading Style:</span>
                     <select 
@@ -657,7 +708,7 @@ export default function Dashboard() {
             {/* General Metrics */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               
-              <div className="bg-white border border-gray-200 shadow-sm p-4 rounded-xl flex items-center gap-4">
+             <div className="bg-white border border-gray-200 shadow-sm p-4 rounded-xl flex items-center gap-4">
                 <div className="p-3 bg-emerald-100 text-emerald-600 rounded-lg hidden sm:block">
                   <Activity className="w-6 h-6" />
                 </div>
@@ -667,7 +718,7 @@ export default function Dashboard() {
                 </div>
               </div>
 
-              <div className="bg-white border border-gray-200 shadow-sm p-4 rounded-xl flex items-center gap-4">
+             <div className="bg-white border border-gray-200 shadow-sm p-4 rounded-xl flex items-center gap-4">
                 <div className="p-3 bg-purple-100 text-purple-600 rounded-lg hidden sm:block">
                   <TrendingUp className="w-6 h-6" />
                 </div>
@@ -679,7 +730,7 @@ export default function Dashboard() {
                 </div>
               </div>
 
-              <div className="bg-white border border-gray-200 shadow-sm p-4 rounded-xl flex items-center gap-4">
+             <div className="bg-white border border-gray-200 shadow-sm p-4 rounded-xl flex items-center gap-4">
                 <div className="p-3 bg-pink-100 text-pink-600 rounded-lg hidden sm:block">
                   <DollarSign className="w-6 h-6" />
                 </div>
@@ -691,7 +742,7 @@ export default function Dashboard() {
                 </div>
               </div>
 
-              <div className="bg-white border border-gray-200 shadow-sm p-4 rounded-xl flex items-center gap-4">
+             <div className="bg-white border border-gray-200 shadow-sm p-4 rounded-xl flex items-center gap-4">
                 <div className="p-3 bg-blue-100 text-blue-600 rounded-lg hidden sm:block">
                   <DollarSign className="w-6 h-6" />
                 </div>
@@ -703,7 +754,7 @@ export default function Dashboard() {
             </div>
 
             {/* === Death Spiral Cost Accounting === */}
-            {(() => {
+             {(() => {
               const grossPnl = (currentState.realized_pnl ?? 0);
               const totalFees = (currentState.total_fees_paid ?? 0);
               const totalFunding = (currentState.total_funding_paid ?? 0);
@@ -715,9 +766,9 @@ export default function Dashboard() {
               return (
                 <div className="space-y-3">
                   {/* Row 1: PnL breakdown */}
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                     {/* Gross PnL */}
-                    <div className="bg-white border border-gray-200 shadow-sm p-4 rounded-xl flex items-center gap-3">
+                     <div className="bg-white border border-gray-200 shadow-sm p-4 rounded-xl flex items-center gap-3">
                       <div className="p-2.5 bg-blue-100 text-blue-600 rounded-lg shrink-0">
                         <TrendingUp className="w-5 h-5" />
                       </div>
@@ -733,7 +784,7 @@ export default function Dashboard() {
                     </div>
 
                     {/* Net PnL */}
-                    <div className={`border shadow-sm p-4 rounded-xl flex items-center gap-3 ${
+                     <div className={`border shadow-sm p-4 rounded-xl flex items-center gap-3 ${
                       netPnl < -50 ? 'bg-red-50 border-red-300' :
                       netPnl < 0 ? 'bg-orange-50 border-orange-200' :
                       'bg-white border-gray-200'
@@ -741,7 +792,7 @@ export default function Dashboard() {
                       <div className={`p-2.5 rounded-lg shrink-0 ${
                         netPnl < 0 ? 'bg-red-100 text-red-600' : 'bg-emerald-100 text-emerald-600'
                       }`}>
-                        {netPnl < 0 ? <TrendingDown className="w-5 h-5" /> : <TrendingUp className="w-5 h-5" />}
+                        {netPnl < 0 ? <span className="inline-flex items-center"><TrendingDown className="w-5 h-5" /></span> : <span className="inline-flex items-center"><TrendingUp className="w-5 h-5" /></span>}
                       </div>
                       <div>
                         <p className="text-xs text-gray-400 uppercase tracking-wider font-semibold">Net PnL</p>
@@ -755,7 +806,7 @@ export default function Dashboard() {
                     </div>
 
                     {/* Total Fees */}
-                    <div className="bg-white border border-gray-200 shadow-sm p-4 rounded-xl flex items-center gap-3">
+                     <div className="bg-white border border-gray-200 shadow-sm p-4 rounded-xl flex items-center gap-3">
                       <div className="p-2.5 bg-amber-100 text-amber-600 rounded-lg shrink-0">
                         <DollarSign className="w-5 h-5" />
                       </div>
@@ -769,7 +820,7 @@ export default function Dashboard() {
                     </div>
 
                     {/* Funding Paid */}
-                    <div className={`border shadow-sm p-4 rounded-xl flex items-center gap-3 ${
+                     <div className={`border shadow-sm p-4 rounded-xl flex items-center gap-3 ${
                       totalFunding > 10 ? 'bg-red-50 border-red-200' : 'bg-white border-gray-200'
                     }`}>
                       <div className={`p-2.5 rounded-lg shrink-0 ${
@@ -790,15 +841,15 @@ export default function Dashboard() {
                   </div>
 
                   {/* Row 2: Dynamic Hurdle vs Spread */}
-                  <div className={`border shadow-sm p-5 rounded-xl ${
-                    isBlocked ? 'bg-red-50 border-red-200' : 'bg-emerald-50 border-emerald-200'
-                  }`}>
+                 <div className={`border shadow-sm p-5 rounded-xl ${
+                     isBlocked ? 'bg-red-50 border-red-200' : 'bg-emerald-50 border-emerald-200'
+                   }`}>
                     <div className="flex items-center justify-between mb-4">
                       <div className="flex items-center gap-2">
                         <div className={`p-1.5 rounded-lg ${
                           isBlocked ? 'bg-red-100 text-red-600' : 'bg-emerald-100 text-emerald-600'
                         }`}>
-                          {isBlocked ? <AlertTriangle className="w-4 h-4" /> : <CheckCircle className="w-4 h-4" />}
+                          {isBlocked ? <span className="inline-flex items-center"><AlertTriangle className="w-4 h-4" /></span> : <span className="inline-flex items-center"><CheckCircle className="w-4 h-4" /></span>}
                         </div>
                         <h3 className="text-sm font-bold text-gray-800">Dynamic Hurdle vs Current Spread</h3>
                         <span className={`text-xs font-bold px-2.5 py-1 rounded-full ${
@@ -806,7 +857,7 @@ export default function Dashboard() {
                             ? 'bg-red-500 text-white'
                             : 'bg-emerald-500 text-white'
                         }`}>
-                          {isBlocked ? '⛔ BLOCKED' : '✅ CLEAR'}
+                          {isBlocked ? 'BLOCKED' : 'CLEAR'}
                         </span>
                       </div>
                       <p className="text-xs text-gray-500">
@@ -821,7 +872,7 @@ export default function Dashboard() {
                       <div>
                         <div className="flex justify-between text-xs mb-1">
                           <span className="font-semibold text-red-600 flex items-center gap-1">
-                            <AlertTriangle className="w-3 h-3" /> Dynamic Hurdle
+                            <span className="inline-flex items-center gap-2"><AlertTriangle className="w-3 h-3" /> <span>Dynamic Hurdle</span></span>
                           </span>
                           <span className="font-mono font-bold text-red-600">{dynamicHurdleBps.toFixed(2)} bps</span>
                         </div>
@@ -840,7 +891,7 @@ export default function Dashboard() {
                           <span className={`font-semibold flex items-center gap-1 ${
                             isBlocked ? 'text-gray-500' : 'text-emerald-600'
                           }`}>
-                            <Activity className="w-3 h-3" /> Current Spread
+                            <span className="inline-flex items-center gap-2"><Activity className="w-3 h-3" /> <span>Current Spread</span></span>
                           </span>
                           <span className={`font-mono font-bold ${
                             isBlocked ? 'text-gray-500' : 'text-emerald-600'
@@ -872,11 +923,13 @@ export default function Dashboard() {
               );
             })()}
 
-            {/* Trading Analytics */}
+            </div>
 
-            <div className="bg-white border border-gray-200 shadow-sm p-5 rounded-xl h-[500px]">
+            {/* Trading Analytics (chart) - hidden on mobile unless selected */}
+            <div className={`sm:block ${mobileView === 'chart' ? 'block' : 'hidden'}`}>
+              <div className="bg-white border border-gray-200 shadow-sm p-5 rounded-xl h-auto md:h-[500px] min-h-[320px]">
 
-              <div className="flex flex-col xl:flex-row xl:items-center justify-between mb-4 gap-4">
+               <div className="flex flex-col xl:flex-row xl:items-center justify-between mb-4 gap-4">
                 <div className="flex flex-col gap-2">
                   <h2 className="text-sm font-medium text-gray-500">Stat Arb Spread & Z-Score</h2>
                   <div className="flex flex-wrap items-center gap-2">
@@ -889,12 +942,12 @@ export default function Dashboard() {
                       Follow Live
                     </label>
                     <button onClick={() => chartRef.current?.fitContent()} className="text-xs bg-blue-50 text-blue-600 border border-blue-200 px-2 py-1 rounded hover:bg-blue-100 flex items-center gap-1">
-                      <Maximize className="w-3 h-3"/> Fit
+                      <span className="inline-flex items-center gap-2"><Maximize className="w-3 h-3"/> <span>Fit</span></span>
                     </button>
                   </div>
                 </div>
               </div>
-              <div className="w-full h-[calc(100%-4.5rem)]">
+               <div className="w-full h-[calc(100%-4.5rem)] min-h-0">
                 <ErrorBoundary
                   fallback={(error, resetError) => (
                     <div className="w-full h-full border border-red-200 rounded-lg bg-red-50 p-4 flex flex-col justify-center">
@@ -920,10 +973,14 @@ export default function Dashboard() {
 
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-              <div className="bg-white border border-gray-200 shadow-sm p-5 rounded-xl h-[1040px] lg:col-span-1">
+            </div>
+
+            {/* Order Books + Trades grid - hidden on mobile unless selected */}
+            <div className={`sm:block ${mobileView === 'books' ? 'block' : 'hidden'}`}>
+              <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+              <div className="bg-white border border-gray-200 shadow-sm p-5 rounded-xl h-auto md:h-[520px] lg:h-[1040px] lg:col-span-1 min-h-0">
                 <h2 className="text-sm font-medium text-gray-500 mb-4">{targetAsset} Order Book</h2>
-                <div className="w-full h-[calc(100%-2rem)]">
+                <div className="w-full h-[calc(100%-2rem)] min-h-0 overflow-y-auto">
                   <OrderBookDepth 
                     bids={targetDepth.bids} 
                     asks={targetDepth.asks} 
@@ -934,9 +991,9 @@ export default function Dashboard() {
                 </div>
               </div>
 
-              <div className="bg-white border border-gray-200 shadow-sm p-5 rounded-xl h-[1040px] lg:col-span-1">
+              <div className="bg-white border border-gray-200 shadow-sm p-5 rounded-xl h-auto md:h-[520px] lg:h-[1040px] lg:col-span-1 min-h-0">
                 <h2 className="text-sm font-medium text-gray-500 mb-4">{featureAsset} Order Book</h2>
-                <div className="w-full h-[calc(100%-2rem)]">
+                <div className="w-full h-[calc(100%-2rem)] min-h-0 overflow-y-auto">
                   <OrderBookDepth 
                     bids={featureDepth.bids} 
                     asks={featureDepth.asks} 
@@ -946,10 +1003,9 @@ export default function Dashboard() {
                   />
                 </div>
               </div>
-              
-              <div className="bg-white border border-gray-200 shadow-sm p-5 rounded-xl h-[1040px] lg:col-span-2">
+              <div className="bg-white border border-gray-200 shadow-sm p-5 rounded-xl h-auto md:h-[520px] lg:h-[1040px] lg:col-span-2 min-h-0">
                 <h2 className="text-sm font-medium text-gray-500 mb-4">Orders Activity (Fills + Cancels + Pending)</h2>
-                <div className="w-full h-[calc(100%-2rem)]">
+                <div className="w-full h-[calc(100%-2rem)] min-h-0">
                   <TradesList trades={currentState?.recent_trades ?? []} cancellations={[]} pendingOrders={currentState?.pending_orders ?? []} />
                 </div>
               </div>
@@ -972,9 +1028,9 @@ export default function Dashboard() {
                   }`}
                 >
                   {isFetchingHistory ? (
-                    <><div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" /> Fetching Data...</>
+                    <span className="inline-flex items-center gap-2"><div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" /> <span>Fetching Data...</span></span>
                   ) : (
-                    <><Activity className="w-4 h-4" /> Run 1-Month Analysis</>
+                    <span className="inline-flex items-center gap-2"><Activity className="w-4 h-4" /> <span>Run Analysis</span></span>
                   )}
                 </button>
               </div>
@@ -1029,13 +1085,16 @@ export default function Dashboard() {
             </div>
 
           </div>
-        ) : (
+        </div>
+        ):(
           <div className="h-[400px] flex flex-col items-center justify-center border border-gray-200 border-dashed rounded-xl bg-white/50 shadow-sm">
             <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-4" />
             <p className="text-gray-500 font-medium">Initializing...</p>
-            <p className="text-sm text-gray-400 mt-2">Loading Python environment with Pandas, NumPy, and SciPy</p>
+            <p className="text-sm text-gray-400 mt-2">Loading Python environment</p>
           </div>
         )}
+
+        
 
       </div>
     </main>
