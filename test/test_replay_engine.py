@@ -227,6 +227,79 @@ class TestReplayMarketSlippage:
         assert engine.portfolio.total_fees_paid == 0.0
         assert engine.portfolio.cash == 100000.0 - 100.0
 
+    def test_skip_same_timestamp_exit_after_entry(self):
+        """A newly opened position should not immediately close on the same timestamp."""
+        engine = self.engine_mod.TradingEngine(target='AAA', feature='BBB')
+        received = []
+        engine.bus.subscribe('SIGNAL_GENERATED', lambda payload: received.append(payload))
+
+        engine.signal_generator.is_position_open = True
+        engine.signal_generator.anchored_mean = 0.0
+        engine.signal_generator.anchored_std = 1.0
+        engine.signal_generator.last_entry_ts = 1000
+        engine.portfolio.positions = {'AAA': 1.0, 'BBB': -1.0}
+
+        engine.bus.publish('MODEL_UPDATED', {
+            'timestamp': 1000,
+            'is_ready': True,
+            'target_price': 100.0,
+            'feature_price': 50.0,
+            'target_bid': 100.0,
+            'target_ask': 100.0,
+            'feature_bid': 50.0,
+            'feature_ask': 50.0,
+            'beta': 1.0,
+            'alpha': 0.0,
+            'spread_mean': 0.0,
+            'spread_std': 1.0,
+            'spread': 0.0,
+            'z_score': 0.0,
+        })
+
+        assert not any(payload.get('direction') == 'EMERGENCY_CLOSE_SPREAD' for payload in received)
+
+
+class TestReplayVerboseLogFiltering:
+    """Ensure verbose mode only prints useful trade and exit logs."""
+
+    def setup_method(self):
+        self.replay_mod = _load_replay()
+
+    def test_should_print_only_trade_and_signal_logs(self):
+        should_print = self.replay_mod._should_print_verbose_log
+
+        assert should_print({'message': 'Order FILLED: BUY 1 AAA @ 100.0'})
+        assert should_print({'message': 'LONG_SPREAD signaled. Edge: 15.00 bps'})
+        assert should_print({'message': 'Entering LONG_SPREAD for AAA & BBB'})
+        assert should_print({'message': 'CIRCUIT BREAKER TRIPPED! Drawdown: 5.00%'})
+
+        assert not should_print({'message': 'MODEL_WARMUP 3/50'})
+        assert not should_print({'message': 'No entry signal.'})
+        assert not should_print({'message': 'Entry ignored: Spread 2.00 bps < min 10.00 bps.'})
+
+    def test_dispatch_to_engine_filters_verbose_printer(self, capsys):
+        class DummyEngine:
+            def process_events(self, events):
+                return {
+                    'logs': [
+                        {'level': 'DEBUG', 'message': 'MODEL_WARMUP 3/50'},
+                        {'level': 'INFO', 'message': 'Model warmed up. Beta: 1.23'},
+                        {'level': 'INFO', 'message': 'Entering LONG_SPREAD for AAA & BBB'},
+                        {'level': 'INFO', 'message': 'Order FILLED: BUY 1 AAA @ 100.0'},
+                        {'level': 'WARN', 'message': 'Time-stop triggered. Held for 10.0s'},
+                    ]
+                }
+
+        engine = DummyEngine()
+        self.replay_mod._dispatch_to_engine(engine, [{'type': 'TEST'}], verbose=True, ts=1000)
+        output = capsys.readouterr().out
+
+        assert 'MODEL_WARMUP' not in output
+        assert 'Model warmed up' not in output
+        assert 'Entering LONG_SPREAD for AAA & BBB' in output
+        assert 'Order FILLED: BUY 1 AAA @ 100.0' in output
+        assert 'Time-stop triggered' in output
+
 
 # ---------------------------------------------------------------------------
 # Test 2 — Limit order trade-through
