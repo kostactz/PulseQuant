@@ -3,6 +3,8 @@ import logging
 from typing import Dict, List, Any, Callable
 import concurrent.futures
 
+MAX_ALL_HISTORICAL_TRADES = 1000  # cap in-memory history for long-running sessions
+
 # ==========================================
 # 1. EVENT BUS & PUB-SUB CORE
 # ==========================================
@@ -826,6 +828,8 @@ class PortfolioManager:
                 self.all_historical_trades.append(trade_record)
                 if len(self.recent_trades) > 100:
                     self.recent_trades.pop(0)
+                if len(self.all_historical_trades) > MAX_ALL_HISTORICAL_TRADES:
+                    self.all_historical_trades.pop(0)
 
     def get_unrealized_pnl(self, target_bid: float, target_ask: float, feature_bid: float, feature_ask: float) -> float:
         upnl = 0.0
@@ -1201,7 +1205,7 @@ class TradingEngine:
             'trades_volume': getattr(self.portfolio, 'win_trades', 0) + getattr(self.portfolio, 'loss_trades', 0),
             'maker_timeouts': getattr(self.execution, 'maker_timeouts', 0),
             'total_maker_orders': getattr(self.execution, 'total_maker_orders', 0),
-            'all_historical_trades': getattr(self.portfolio, 'all_historical_trades', []),
+            'historical_trade_count': len(getattr(self.portfolio, 'all_historical_trades', [])),
             'dynamic_hurdle_bps': getattr(self.signal_generator, 'last_dynamic_hurdle_bps', 0.0),
             'decision_counts': getattr(self.signal_generator, 'decision_counters', {}),
             'positions': self.portfolio.positions,

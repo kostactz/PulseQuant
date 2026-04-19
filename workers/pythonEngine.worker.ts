@@ -169,6 +169,9 @@ if "/" not in sys.path:
 let tickBuffer: any[] = [];
 let batchTimeout: any = null;
 const BATCH_INTERVAL_MS = 50;
+const MAX_WORKER_QUEUE_SIZE = 400;
+let droppedTickCount = 0;
+let peakWorkerQueueSize = 0;
 
 function flushBatch() {
   batchTimeout = null;
@@ -176,6 +179,7 @@ function flushBatch() {
   
   const batch = tickBuffer;
   tickBuffer = [];
+  const queueLengthAtFlush = batch.length;
   
   const now = Date.now();
   const enqueuedAt = batch[0].enqueuedAt || now;
@@ -222,7 +226,10 @@ function flushBatch() {
     const currentStats = {
       mps: mps.toFixed(1),
       netLat: avgNetLat.toFixed(1),
-      sysLat: avgSysLat.toFixed(1)
+      sysLat: avgSysLat.toFixed(1),
+      queueLength: queueLengthAtFlush,
+      peakQueueLength: peakWorkerQueueSize,
+      droppedTickCount,
     };
     
     (self as any).latestStats = currentStats;
@@ -267,6 +274,20 @@ self.onmessage = async (e: MessageEvent) => {
       
       for (const item of payloadArr) {
         tickBuffer.push({ payload: item, enqueuedAt });
+      }
+
+      if (tickBuffer.length > peakWorkerQueueSize) {
+        peakWorkerQueueSize = tickBuffer.length;
+      }
+
+      if (tickBuffer.length > MAX_WORKER_QUEUE_SIZE) {
+        const overflow = tickBuffer.length - MAX_WORKER_QUEUE_SIZE;
+        tickBuffer.splice(0, overflow);
+        droppedTickCount += overflow;
+        if (now - lastQueueWarnTime > 5000) {
+          postMessage({ type: 'LOGS', data: [{ level: 'WARN', message: `Worker queue overflow: dropped ${overflow} stale event(s).`, data: { queueSize: tickBuffer.length, maxQueue: MAX_WORKER_QUEUE_SIZE } }] });
+          lastQueueWarnTime = now;
+        }
       }
 
       if (!batchTimeout) {
