@@ -318,6 +318,7 @@ class SignalGenerator:
         self.anchored_mean = None
         self.is_position_open = False
         self.anchored_std = None
+        self.last_entry_ts = 0
 
         self.decision_counters = {
             'no_signal': 0,
@@ -546,6 +547,7 @@ class SignalGenerator:
                     if expected_target_notional >= MIN_NOTIONAL and abs(current_net_delta + expected_target_notional) <= self.max_net_delta:
                         self.decision_counters['entry_taken'] += 1
                         just_entered = True
+                        self.last_entry_ts = payload.get('timestamp', 0)
                         self.bus.publish('LOG', {'level': 'INFO', 'message': f'LONG_SPREAD signaled. Edge: {expected_edge_long_bps:.2f} bps, Kelly Notional: {expected_target_notional:.2f}'})
                         self.anchored_mean = spread_mean
                         self.anchored_std = spread_std
@@ -568,6 +570,7 @@ class SignalGenerator:
                     if expected_target_notional >= MIN_NOTIONAL and abs(current_net_delta - expected_target_notional) <= self.max_net_delta:
                         self.decision_counters['entry_taken'] += 1
                         just_entered = True
+                        self.last_entry_ts = payload.get('timestamp', 0)
                         self.bus.publish('LOG', {'level': 'INFO', 'message': f'SHORT_SPREAD signaled. Edge: {expected_edge_short_bps:.2f} bps, Kelly Notional: {expected_target_notional:.2f}'})
                         self.anchored_mean = spread_mean
                         self.anchored_std = spread_std
@@ -582,38 +585,47 @@ class SignalGenerator:
 
         # Exit logic
         if not just_entered and self.anchored_mean is not None and self.anchored_std is not None and self.anchored_std > 1e-12:
-            # We are currently in a position. Use the anchored parameters to measure reversion.
-            eval_z_score = (payload.get('spread', 0.0) - self.anchored_mean) / self.anchored_std
-            
-            # Determine direction of our position
-            target_pos = self.portfolio.positions.get(self.target, 0.0)
-            is_long = target_pos > 0.0
-            
-            # Reversion conditions:
-            # If LONG, we want the spread (and z-score) to increase towards 0.
-            # If SHORT, we want the spread (and z-score) to decrease towards 0.
-            reverted = False
-            if is_long and eval_z_score >= -self.exit_threshold:
-                reverted = True
-            elif not is_long and eval_z_score <= self.exit_threshold:
-                reverted = True
+            # Skip immediate same-timestamp exit evaluation after a new entry.
+            if self.last_entry_ts != 0 and payload.get('timestamp', 0) == self.last_entry_ts:
+                self.bus.publish('LOG', {
+                    'level': 'DEBUG',
+                    'event': 'ENTRY_HOLD_OFF',
+                    'message': 'Skipping same-timestamp exit evaluation after opening a new position.',
+                    'timestamp': payload.get('timestamp', 0)
+                })
+            else:
+                # We are currently in a position. Use the anchored parameters to measure reversion.
+                eval_z_score = (payload.get('spread', 0.0) - self.anchored_mean) / self.anchored_std
                 
-            # Emergency Stop Loss
-            emergency_threshold = self.entry_threshold * self.stop_loss_multiplier
-            stopped_out = False
-            if is_long and eval_z_score <= -emergency_threshold:
-                stopped_out = True
-            elif not is_long and eval_z_score >= emergency_threshold:
-                stopped_out = True
-                
-            if stopped_out:
-                self.anchored_mean = None
-                self.anchored_std = None
-                self.bus.publish('SIGNAL_GENERATED', {'direction': 'EMERGENCY_CLOSE_SPREAD', 'z_score': eval_z_score})
-            elif reverted:
-                self.anchored_mean = None
-                self.anchored_std = None
-                self.bus.publish('SIGNAL_GENERATED', {'direction': 'CLOSE_SPREAD', 'z_score': eval_z_score})
+                # Determine direction of our position
+                target_pos = self.portfolio.positions.get(self.target, 0.0)
+                is_long = target_pos > 0.0
+
+                # Reversion conditions:
+                # If LONG, we want the spread (and z-score) to increase towards 0.
+                # If SHORT, we want the spread (and z-score) to decrease towards 0.
+                reverted = False
+                if is_long and eval_z_score >= -self.exit_threshold:
+                    reverted = True
+                elif not is_long and eval_z_score <= self.exit_threshold:
+                    reverted = True
+                    
+                # Emergency Stop Loss
+                emergency_threshold = self.entry_threshold * self.stop_loss_multiplier
+                stopped_out = False
+                if is_long and eval_z_score <= -emergency_threshold:
+                    stopped_out = True
+                elif not is_long and eval_z_score >= emergency_threshold:
+                    stopped_out = True
+
+                if stopped_out:
+                    self.anchored_mean = None
+                    self.anchored_std = None
+                    self.bus.publish('SIGNAL_GENERATED', {'direction': 'EMERGENCY_CLOSE_SPREAD', 'z_score': eval_z_score})
+                elif reverted:
+                    self.anchored_mean = None
+                    self.anchored_std = None
+                    self.bus.publish('SIGNAL_GENERATED', {'direction': 'CLOSE_SPREAD', 'z_score': eval_z_score})
         else:
             # Not in a position, just tracking
             eval_z_score = z_score
