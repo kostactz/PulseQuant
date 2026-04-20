@@ -641,12 +641,18 @@ class TestStatArbNoLookahead:
         assert received, "No MODEL_UPDATED events received"
         last = received[-1]
         # The published beta should equal the *prior* (pre-update) beta
-        # i.e. model.beta should lag one step behind bivariate.get_beta()
+        # captured immediately before the final _evaluate() call above.
         beta_in_event = last['beta']
         beta_post_update = model.bivariate.get_beta()
-        assert beta_in_event != beta_post_update or abs(beta_post_update - beta_in_event) < 1.0, (
-            "Beta in event should be from PRIOR state (before this tick's Kalman update)"
+        assert abs(beta_in_event - beta_before_update) < 1e-12, (
+            "Beta in event should equal the PRIOR state (before this tick's Kalman update)"
         )
+        # If the final update actually changed beta, the published beta should
+        # differ from the post-update beta, proving there was no lookahead.
+        if abs(beta_post_update - beta_before_update) >= 1e-12:
+            assert abs(beta_in_event - beta_post_update) >= 1e-12, (
+                "Beta in event should not use the post-update beta when the update changes it"
+            )
         # The spread must use the prior beta
         log_y = math.log(model.target_price)
         log_x = math.log(model.feature_price)
