@@ -126,6 +126,11 @@ export function useMarketData(connectEnabled: boolean = true, tradingMode: Tradi
           
           // Fake execution report back to engine to keep the mock portfolio running
           if (intent.action === 'PLACE_ORDER') {
+            const normalizedIntentSymbol = intent.symbol.toLowerCase();
+            const latestTick =
+              latestTickRefs.current[normalizedIntentSymbol] ??
+              latestTickRefs.current[intent.symbol];
+
             setTimeout(() => {
               if (onExecutionReportImmediateRef.current) {
                 onExecutionReportImmediateRef.current({
