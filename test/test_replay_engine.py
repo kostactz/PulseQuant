@@ -347,7 +347,7 @@ class TestReplayLimitTradeThroughBuy:
         tick1 = {'bid': 99.0, 'ask': limit_price, 'symbol': 'AAA', 'timestamp': ts1}
         last_tick['AAA'] = tick1
         last_tick['__any__'] = tick1
-        self.replay_mod._check_limit_fills(engine, pending, tick1, ts1)
+        self.replay_mod._check_limit_fills(engine, pending, tick1, ts1, last_tick, slippage_bps)
         assert len(fills) == 0, "No fill when ask == limit_price (strict <)"
         assert len(pending) == 1
 
@@ -356,7 +356,7 @@ class TestReplayLimitTradeThroughBuy:
         tick2 = {'bid': 99.0, 'ask': crossing_ask, 'symbol': 'AAA', 'timestamp': ts2}
         last_tick['AAA'] = tick2
         last_tick['__any__'] = tick2
-        self.replay_mod._check_limit_fills(engine, pending, tick2, ts2)
+        self.replay_mod._check_limit_fills(engine, pending, tick2, ts2, last_tick, slippage_bps)
 
         return fills, pending
 
@@ -414,12 +414,16 @@ class TestReplayLimitTradeThroughBuy:
 
         # Non-crossing: bid == limit_price
         tick1 = {'bid': limit_price, 'ask': 101.0, 'symbol': 'AAA', 'timestamp': 2000}
-        self.replay_mod._check_limit_fills(engine, pending, tick1, 2000)
+        last_tick['AAA'] = tick1
+        last_tick['__any__'] = tick1
+        self.replay_mod._check_limit_fills(engine, pending, tick1, 2000, last_tick, 10)
         assert len(fills) == 0
 
         # Crossing: bid strictly > limit_price
         tick2 = {'bid': 100.05, 'ask': 101.0, 'symbol': 'AAA', 'timestamp': 3000}
-        self.replay_mod._check_limit_fills(engine, pending, tick2, 3000)
+        last_tick['AAA'] = tick2
+        last_tick['__any__'] = tick2
+        self.replay_mod._check_limit_fills(engine, pending, tick2, 3000, last_tick, 10)
         assert len(fills) == 1
         assert fills[0]['is_maker'] is True
         assert abs(fills[0]['price'] - limit_price) < 1e-8
@@ -462,7 +466,9 @@ class TestReplayLimitTradeThroughBuy:
 
         # Even a crossing tick should not fill it
         crossing = {'bid': 99.0, 'ask': 98.0, 'symbol': 'AAA', 'timestamp': 2000}
-        self.replay_mod._check_limit_fills(engine, pending, crossing, 2000)
+        last_tick['AAA'] = crossing
+        last_tick['__any__'] = crossing
+        self.replay_mod._check_limit_fills(engine, pending, crossing, 2000, last_tick, 10)
         assert len(fills) == 0
 
 

@@ -834,18 +834,29 @@ class PortfolioManager:
                     self.all_historical_trades.pop(0)
 
     def get_unrealized_pnl(self, target_bid: float, target_ask: float, feature_bid: float, feature_ask: float) -> float:
-        upnl = 0.0
+        return sum(self.get_unrealized_pnl_map(target_bid, target_ask, feature_bid, feature_ask).values())
+
+    def get_unrealized_pnl_map(self, target_bid: float, target_ask: float, feature_bid: float, feature_ask: float) -> dict:
+        result = {}
         # Target Leg Liquidation Value
         t_pos = self.positions.get(self.target, 0.0)
-        if t_pos > 0: upnl += (target_bid - self.avg_entry_prices.get(self.target, 0.0)) * t_pos
-        elif t_pos < 0: upnl += (target_ask - self.avg_entry_prices.get(self.target, 0.0)) * t_pos
-        
+        if t_pos > 0:
+            result[self.target] = (target_bid - self.avg_entry_prices.get(self.target, 0.0)) * t_pos
+        elif t_pos < 0:
+            result[self.target] = (target_ask - self.avg_entry_prices.get(self.target, 0.0)) * t_pos
+        else:
+            result[self.target] = 0.0
+
         # Feature Leg Liquidation Value
         f_pos = self.positions.get(self.feature, 0.0)
-        if f_pos > 0: upnl += (feature_bid - self.avg_entry_prices.get(self.feature, 0.0)) * f_pos
-        elif f_pos < 0: upnl += (feature_ask - self.avg_entry_prices.get(self.feature, 0.0)) * f_pos
-        
-        return upnl
+        if f_pos > 0:
+            result[self.feature] = (feature_bid - self.avg_entry_prices.get(self.feature, 0.0)) * f_pos
+        elif f_pos < 0:
+            result[self.feature] = (feature_ask - self.avg_entry_prices.get(self.feature, 0.0)) * f_pos
+        else:
+            result[self.feature] = 0.0
+
+        return result
 
     def get_nav(self, target_price: float, feature_price: float) -> float:
         nav = self.cash
@@ -1196,10 +1207,10 @@ class TradingEngine:
             'portfolio_value': self.portfolio.get_nav(self.model.target_price, self.model.feature_price),
             'capital': self.portfolio.cash,
             'realized_pnl': getattr(self.portfolio, 'realized_pnl', 0.0),
-            'unrealized_pnl': self.portfolio.get_unrealized_pnl(
+            'unrealized_pnl': self.portfolio.get_unrealized_pnl_map(
                 self.model.target_bid, self.model.target_ask,
                 self.model.feature_bid, self.model.feature_ask
-            ) if hasattr(self.portfolio, 'get_unrealized_pnl') else 0.0,
+            ) if hasattr(self.portfolio, 'get_unrealized_pnl_map') else {},
             'total_fees_paid': getattr(self.portfolio, 'total_fees_paid', 0.0),
             'total_funding_paid': getattr(self.portfolio, 'total_funding_paid', 0.0),
             'win_trades': getattr(self.portfolio, 'win_trades', 0),
