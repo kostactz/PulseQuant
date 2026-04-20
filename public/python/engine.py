@@ -293,7 +293,7 @@ class SignalGenerator:
         self.max_half_life = 7200  # in periods
         self.max_net_delta = 50000.0  # max unhedged exposure
 
-        self.maker_fee = 0.0000   # 2 bps — maker entry
+        self.maker_fee = 0.0000   # 0 bps — maker entry
         self.taker_fee = 0.0005   # 5 bps — taker exit
         self.slippage_bps = 5.0  # default conservative slippage
 
