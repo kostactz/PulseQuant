@@ -727,7 +727,9 @@ export default function Dashboard() {
               const grossPnl = (currentState.realized_pnl ?? 0);
               const totalFees = (currentState.total_fees_paid ?? 0);
               const totalFunding = (currentState.total_funding_paid ?? 0);
-              const netPnl = grossPnl - totalFees - totalFunding;
+              // `realized_pnl` already reflects funding updates from the engine,
+              // so only subtract fees here to avoid double-counting funding.
+              const netPnl = grossPnl - totalFees;
               const dynamicHurdleBps = (currentState.dynamic_hurdle_bps ?? 0);
               const currentSpreadBps = Math.abs((currentState.spread_metrics?.current_spread ?? 0)) * 10000;
               const isBlocked = dynamicHurdleBps >= currentSpreadBps || currentSpreadBps < 0.001;
