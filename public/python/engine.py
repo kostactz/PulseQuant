@@ -373,17 +373,19 @@ class SignalGenerator:
     def _compute_dynamic_hurdle_bps(self) -> float:
         """Compute the minimum edge (in bps) required to justify a new position.
 
-        dynamic_hurdle = taker_entry_fee + taker_exit_fee + slippage + funding_drag
+        dynamic_hurdle = taker_entry_fee + taker_exit_fee + round_trip_slippage + funding_drag
 
         estimated hold time ≈ half_life_seconds (capped at one 8-hour funding period)
         funding_drag ≈ abs(funding_rate) × (hold / (8h)) × 10_000
         """
-        # 2 legs per entry (target + feature) and 2 legs per exit
+        # 2 legs per entry (target + feature) and 2 legs per exit.
+        # slippage_bps is treated as a per-order execution cost, so apply it to all 4 legs.
         taker_entry_fee_bps = (self.taker_fee * 2) * 10_000
         taker_exit_fee_bps = (self.taker_fee * 2) * 10_000
+        round_trip_slippage_bps = self.slippage_bps * 4
         hold_s = min(self.half_life_seconds, 8 * 3600)
         funding_bps = abs(self.current_funding_rate) * (hold_s / (8 * 3600)) * 10_000
-        hurdle = taker_entry_fee_bps + taker_exit_fee_bps + self.slippage_bps + funding_bps
+        hurdle = taker_entry_fee_bps + taker_exit_fee_bps + round_trip_slippage_bps + funding_bps
         self.last_dynamic_hurdle_bps = hurdle
         return hurdle
 
