@@ -12,7 +12,7 @@ import { clearRuntimeCredentials, clearCredentials, getRuntimeCredentials } from
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 
 const CHART_MARGIN = { top: 20, right: 30, left: 20, bottom: 20 };
-const XAXIS_LABEL = { value: 'Z-Score', position: 'insideBottom' as const, offset: -10 };
+const XAXIS_LABEL = { value: 'Z-Score', position: 'insideBottom', offset: -10 };
 const BAR_RADIUS: [number, number, number, number] = [4, 4, 0, 0];
 
 export default function Dashboard() {
@@ -184,6 +184,15 @@ export default function Dashboard() {
       return () => clearInterval(interval);
     }
   }, [isReady, isUnlocked, targetAsset, featureAsset, fetchRegimeData]);
+
+  useEffect(() => {
+    if (!isReady) return;
+
+    void (async () => {
+      await setSymbols(targetAsset, featureAsset);
+      configureStrategy(targetAsset, featureAsset);
+    })();
+  }, [isReady, targetAsset, featureAsset, setSymbols, configureStrategy]);
 
   useEffect(() => {
     if (isReady && !isFetchingHistory && analysisPair !== `${targetAsset}-${featureAsset}`) {
