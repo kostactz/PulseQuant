@@ -255,11 +255,14 @@ export default function Dashboard() {
   // State data is now from uiDelta directly or fallback to metrics for backwards compatibility
   const currentState = uiDelta || metrics;
 
-  const targetDepth = orderBooks[targetAsset] || { bids: [], asks: [] };
-  const targetTick = latestTicks[targetAsset];
+  const targetSymbolKey = targetAsset.toLowerCase();
+  const featureSymbolKey = featureAsset.toLowerCase();
+
+  const targetDepth = orderBooks[targetSymbolKey] || { bids: [], asks: [] };
+  const targetTick = latestTicks[targetSymbolKey];
   
-  const featureDepth = orderBooks[featureAsset] || { bids: [], asks: [] };
-  const featureTick = latestTicks[featureAsset];
+  const featureDepth = orderBooks[featureSymbolKey] || { bids: [], asks: [] };
+  const featureTick = latestTicks[featureSymbolKey];
 
   return (
     <main className="min-h-screen bg-gray-50 text-gray-900 p-6 font-sans">
