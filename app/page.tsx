@@ -104,8 +104,8 @@ export default function Dashboard() {
   // Mobile view tabs: 'sim' = top simulator/metrics, 'chart' = realtime chart, 'books' = orderbooks+trades
   const [mobileView, setMobileView] = useState<'sim' | 'chart' | 'books'>('chart');
 
-  const [targetAsset, setTargetAsset] = useState('ORDIUSDC');
-  const [featureAsset, setFeatureAsset] = useState('SUIUSDC');
+  const [targetAsset, setTargetAsset] = useState('SUSHIUSDT');
+  const [featureAsset, setFeatureAsset] = useState('CAKEUSDT');
   const [isFetchingHistory, setIsFetchingHistory] = useState(false);
   const [analysisPair, setAnalysisPair] = useState<string | null>(null);
 
