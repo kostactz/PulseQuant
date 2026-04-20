@@ -1,6 +1,6 @@
 import { logger } from "@/lib/logger";
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { MarketDataAdapter, NormalizedTick } from '@/lib/market-data/types';
+import { FundingRateData, MarketDataAdapter, NormalizedTick } from '@/lib/market-data/types';
 import { BinanceAdapter } from '@/lib/market-data/adapters/BinanceAdapter';
 import { MockAdapter } from '@/lib/market-data/adapters/MockAdapter';
 import { OrderManager, Intent } from '@/lib/order/OrderManager';
@@ -91,8 +91,8 @@ export function useMarketData(connectEnabled: boolean = true, tradingMode: Tradi
         });
       }
 
-      if ((adapterRef.current as any).onMarkPriceUpdate) {
-        (adapterRef.current as any).onMarkPriceUpdate((fundingData: any) => {
+      if (adapterRef.current.onMarkPriceUpdate) {
+        adapterRef.current.onMarkPriceUpdate((fundingData: FundingRateData) => {
           if (onFundingRateImmediateRef.current) {
             onFundingRateImmediateRef.current({ type: 'FUNDING_RATE_UPDATE', data: fundingData });
           }

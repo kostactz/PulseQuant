@@ -1,5 +1,5 @@
 import { logger } from "../../logger";
-import { MarketDataAdapter, NormalizedTick } from '../types';
+import { FundingRateData, MarketDataAdapter, NormalizedTick } from '../types';
 import { getRuntimeCredentials } from '../../security/credentials';
 
 export class BinanceAdapter implements MarketDataAdapter {
@@ -9,7 +9,7 @@ export class BinanceAdapter implements MarketDataAdapter {
   private executionReportCallback: ((report: any) => void) | null = null;
   private syncStateCallback: ((state: any) => void) | null = null;
   private tickCallback: ((tick: NormalizedTick) => void) | null = null;
-  private markPriceUpdateCallback: ((data: { symbol: string; fundingRate: number; markPrice: number; timestamp: number }) => void) | null = null;
+  private markPriceUpdateCallback: ((data: FundingRateData) => void) | null = null;
 
   private isTestnet: boolean;
   private enableUserData: boolean;
@@ -710,7 +710,7 @@ export class BinanceAdapter implements MarketDataAdapter {
     this.tickCallback = callback;
   }
 
-  onMarkPriceUpdate(callback: (data: { symbol: string; fundingRate: number; markPrice: number; timestamp: number }) => void): void {
+  onMarkPriceUpdate(callback: (data: FundingRateData) => void): void {
     this.markPriceUpdateCallback = callback;
   }
 }
