@@ -1,4 +1,4 @@
-# Algorithmic Analysis - Perfmance
+# Algorithmic Analysis - Performance
 
 Content: algorithmic underpinnings, time complexities, and data flow architecture of the PulseQuant trading engine and the cointegration/backtesting tool.
 
