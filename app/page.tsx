@@ -1,6 +1,7 @@
 'use client';
 import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ReferenceLine, ResponsiveContainer } from 'recharts';
+import type { XAxisProps } from 'recharts';
 import { usePythonWorker } from '@/hooks/usePythonWorker';
 import { useMarketData } from '@/hooks/useMarketData';
 import { SecuritySetupModal } from '@/components/SecuritySetupModal';
@@ -12,7 +13,7 @@ import { clearRuntimeCredentials, clearCredentials, getRuntimeCredentials } from
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 
 const CHART_MARGIN = { top: 20, right: 30, left: 20, bottom: 20 };
-const XAXIS_LABEL = { value: 'Z-Score', position: 'insideBottom', offset: -10 };
+const XAXIS_LABEL: XAxisProps['label'] = { value: 'Z-Score', position: 'insideBottom', offset: -10 };
 const BAR_RADIUS: [number, number, number, number] = [4, 4, 0, 0];
 
 export default function Dashboard() {
