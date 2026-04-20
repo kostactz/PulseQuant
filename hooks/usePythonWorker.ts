@@ -192,18 +192,6 @@ export function usePythonWorker(onIntent?: (intent: any) => void) {
     }
   }, [isReady]);
 
-  const updateStrategy = useCallback((style: string, speed: string) => {
-    if (isReady && workerRef.current) {
-      workerRef.current.postMessage({ type: 'UPDATE_STRATEGY', style, speed });
-    }
-  }, [isReady]);
-
-  const setTradeSize = useCallback((bps: number) => {
-    if (isReady && workerRef.current) {
-      workerRef.current.postMessage({ type: 'SET_TRADE_SIZE', bps });
-    }
-  }, [isReady]);
-
   const configureStrategy = useCallback((target: string, feature: string) => {
     if (isReady && workerRef.current) {
       workerRef.current.postMessage({ type: 'CONFIGURE_STRATEGY', payload: { target, feature } });
@@ -225,5 +213,5 @@ export function usePythonWorker(onIntent?: (intent: any) => void) {
     }
   }, [isReady]);
 
-  return { isReady, metrics, uiDelta, getUIDelta, processBatch, clearData, clearCache, executeTrade, setAutoTrade, updateStrategy, setTradeSize, configureStrategy, runAdhocAnalysis, adhocResult, setStrategyParams };
+  return { isReady, metrics, uiDelta, getUIDelta, processBatch, clearData, clearCache, executeTrade, setAutoTrade, configureStrategy, runAdhocAnalysis, adhocResult, setStrategyParams };
 }

@@ -389,25 +389,6 @@ configure_strategy("${safeTarget}", "${safeFeature}")
         console.error('[Worker] Set strategy params error:', err);
         postMessage({ type: 'ERROR', error: String(err) });
       }
-    } else if (e.data.type === 'UPDATE_STRATEGY') {
-      try {
-        const style = validateStyle(e.data.style);
-        const speed = validateSpeed(e.data.speed);
-        callPyodideFunction('update_strategy', style, speed);
-        postMessage({ type: 'STRATEGY_UPDATED', style, speed });
-      } catch (err) {
-        console.error('[Worker] Update strategy error:', err);
-        postMessage({ type: 'ERROR', error: String(err) });
-      }
-    } else if (e.data.type === 'SET_TRADE_SIZE') {
-      try {
-        const bps = validateBps(e.data.bps);
-        callPyodideFunction('set_trade_size', bps);
-        postMessage({ type: 'TRADE_SIZE_UPDATED', bps });
-      } catch (err) {
-        console.error('[Worker] Set trade size error:', err);
-        postMessage({ type: 'ERROR', error: String(err) });
-      }
     }
   } catch (outerErr) {
     console.error('[Worker] Unexpected message handler error:', outerErr);

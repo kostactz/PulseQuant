@@ -1,5 +1,5 @@
 'use client';
-import React, { useEffect, useState, useRef, useCallback } from 'react';
+import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ReferenceLine, ResponsiveContainer } from 'recharts';
 import { usePythonWorker } from '@/hooks/usePythonWorker';
 import { useMarketData } from '@/hooks/useMarketData';
@@ -10,6 +10,10 @@ import { TradesList } from '@/components/TradesList';
 import { Maximize, Activity, TrendingUp, TrendingDown, DollarSign, Play, Pause, Trash2, Settings2, RefreshCw, Briefcase, ArrowUpRight, ArrowDownRight, Bot, Code, X, Video, Zap, Lock, AlertTriangle, CheckCircle } from 'lucide-react';
 import { clearRuntimeCredentials, clearCredentials, getRuntimeCredentials } from '@/lib/security/credentials';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
+
+const CHART_MARGIN = { top: 20, right: 30, left: 20, bottom: 20 };
+const XAXIS_LABEL = { value: 'Z-Score', position: 'insideBottom' as const, offset: -10 };
+const BAR_RADIUS: [number, number, number, number] = [4, 4, 0, 0];
 
 export default function Dashboard() {
   const [isUnlocked, setIsUnlocked] = useState(true);
@@ -43,7 +47,7 @@ export default function Dashboard() {
       executeModeSwitch(newMode);
     }
   };
-  const { isReady, metrics, uiDelta, getUIDelta, processBatch, clearData, clearCache, executeTrade, setAutoTrade, updateStrategy, setTradeSize, configureStrategy, runAdhocAnalysis, adhocResult, setStrategyParams } = usePythonWorker((intent) => {
+  const { isReady, metrics, uiDelta, getUIDelta, processBatch, clearData, clearCache, executeTrade, setAutoTrade, configureStrategy, runAdhocAnalysis, adhocResult, setStrategyParams } = usePythonWorker((intent) => {
     if (handleIntentRef.current) handleIntentRef.current(intent);
   });
   const { orderBooks, latestTicks, getAndClearBuffer, clearBuffer, isPlaying, setIsPlaying, isRecording, toggleRecording, executeIntent, setSymbols } = useMarketData(
@@ -94,9 +98,6 @@ export default function Dashboard() {
 
   const [uiRefreshInterval, setUiRefreshInterval] = useState(500);
   const [isAutoTrading, setIsAutoTrading] = useState(false);
-  const [strategyStyle, setStrategyStyle] = useState('moderate');
-  const [strategySpeed, setStrategySpeed] = useState('normal');
-  const [tradeSizeBps, setTradeSizeBps] = useState(100);
   const [showCodeModal, setShowCodeModal] = useState(false);
   const [engineCode, setEngineCode] = useState('');
 
@@ -108,7 +109,13 @@ export default function Dashboard() {
   const [isFetchingHistory, setIsFetchingHistory] = useState(false);
   const [analysisPair, setAnalysisPair] = useState<string | null>(null);
 
-  const AVAILABLE_ASSETS = ['ORDIUSDC', 'SUIUSDC', 'ETHUSDT', 'BTCUSDT'];
+  const AVAILABLE_ASSETS = ['ORDIUSDC', 'SUIUSDC', 'ETHUSDT', 'BTCUSDT', 'SUSHIUSDT', 'CAKEUSDT', 'SOLUSDC', 'XRPUSDC'];
+
+  const formatTick = useCallback((val: number) => val.toFixed(2), []);
+  const formatTooltipValue = useCallback((value: any) => [Number(value), 'Frequency'], []);
+  const formatTooltipLabel = useCallback((label: any) => `Z-Score: ${Number(label).toFixed(2)}`, []);
+  const posRecSigmaLabel = useMemo(() => ({ position: 'top', value: '+Rec Sigma', fill: '#10b981' } as any), []);
+  const negRecSigmaLabel = useMemo(() => ({ position: 'top', value: '-Rec Sigma', fill: '#10b981' } as any), []);
 
   const handleRunAnalysis = useCallback(async () => {
     setIsFetchingHistory(true);
@@ -230,18 +237,6 @@ export default function Dashboard() {
       }
     }
     setShowCodeModal(true);
-  };
-
-  useEffect(() => {
-    if (isReady) {
-      setTradeSize(tradeSizeBps);
-    }
-  }, [tradeSizeBps, isReady, setTradeSize]);
-
-  const handleStrategyChange = (style: string, speed: string) => {
-    setStrategyStyle(style);
-    setStrategySpeed(speed);
-    updateStrategy(style, speed);
   };
 
   useEffect(() => {
@@ -615,17 +610,6 @@ export default function Dashboard() {
                 </div>
 
                 <div className="flex items-center gap-2">
-                  <div className="flex items-center bg-gray-50 border border-gray-200 rounded-lg px-2 py-1 mr-2">
-                    <input 
-                      type="number" 
-                      value={isAutoTrading ? (strategyStyle === 'aggressive' ? 250 : strategyStyle === 'conservative' ? 50 : 100) : tradeSizeBps}
-                      onChange={(e) => setTradeSizeBps(Math.max(1, parseInt(e.target.value) || 1))}
-                      className="bg-transparent text-gray-700 w-16 text-right text-sm focus:outline-none disabled:opacity-50"
-                      min="1"
-                      disabled={isAutoTrading}
-                    />
-                    <span className="text-gray-400 text-xs ml-1 font-medium">bps</span>
-                  </div>
                   <button
                     onClick={handleAutoTradeToggle}
                     disabled={!isReady}
@@ -676,33 +660,6 @@ export default function Dashboard() {
                   </div>
                 </div>
                 
-                 <div className="flex flex-col items-end gap-3 min-w-0 w-full sm:w-auto sm:min-w-[200px]">
-                  <div className="flex items-center gap-3">
-                    <span className="text-sm font-medium text-gray-500">Trading Style:</span>
-                    <select 
-                      className="bg-gray-50 border border-gray-200 text-sm rounded-lg px-3 py-1.5 text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                      value={strategyStyle}
-                      onChange={(e) => handleStrategyChange(e.target.value, strategySpeed)}
-                    >
-                      <option value="conservative">Conservative</option>
-                      <option value="moderate">Moderate</option>
-                      <option value="aggressive">Aggressive</option>
-                    </select>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <span className="text-sm font-medium text-gray-500">Signal Speed:</span>
-                    <select 
-                      className="bg-gray-50 border border-gray-200 text-sm rounded-lg px-3 py-1.5 text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                      value={strategySpeed}
-                      onChange={(e) => handleStrategyChange(strategyStyle, e.target.value)}
-                    >
-                      <option value="slow">Slow (Lagging)</option>
-                      <option value="normal">Normal</option>
-                      <option value="fast">Fast (Responsive)</option>
-                    </select>
-                  </div>
-                </div>
-              </div>
             </div>
 
             {/* General Metrics */}
@@ -1058,17 +1015,17 @@ export default function Dashboard() {
 
                   <div className="h-[400px] w-full mt-6">
                     <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={adhocResult.bins} margin={{ top: 20, right: 30, left: 20, bottom: 20 }}>
+                      <BarChart data={adhocResult.bins} margin={CHART_MARGIN}>
                         <XAxis 
                           dataKey="bin" 
-                          tickFormatter={(val) => val.toFixed(2)} 
-                          label={{ value: 'Z-Score', position: 'insideBottom', offset: -10 }} 
+                          tickFormatter={formatTick} 
+                          label={XAXIS_LABEL} 
                         />
                         <YAxis />
-                        <Tooltip formatter={(value: any) => [Number(value), 'Frequency']} labelFormatter={(label: any) => `Z-Score: ${Number(label).toFixed(2)}`} />
-                        <Bar dataKey="count" fill="#3b82f6" radius={[4, 4, 0, 0]} />
-                        <ReferenceLine x={adhocResult.recommended_sigma} stroke="#10b981" strokeDasharray="3 3" label={{ position: 'top', value: '+Rec Sigma', fill: '#10b981' }} />
-                        <ReferenceLine x={-adhocResult.recommended_sigma} stroke="#10b981" strokeDasharray="3 3" label={{ position: 'top', value: '-Rec Sigma', fill: '#10b981' }} />
+                        <Tooltip formatter={formatTooltipValue} labelFormatter={formatTooltipLabel} />
+                        <Bar dataKey="count" fill="#3b82f6" radius={BAR_RADIUS} />
+                        <ReferenceLine x={adhocResult.recommended_sigma} stroke="#10b981" strokeDasharray="3 3" label={posRecSigmaLabel} />
+                        <ReferenceLine x={-adhocResult.recommended_sigma} stroke="#10b981" strokeDasharray="3 3" label={negRecSigmaLabel} />
                         <ReferenceLine x={0} stroke="#ef4444" strokeWidth={1} />
                       </BarChart>
                     </ResponsiveContainer>
@@ -1086,7 +1043,8 @@ export default function Dashboard() {
 
           </div>
         </div>
-        ):(
+        </div>
+      ) : (
           <div className="h-[400px] flex flex-col items-center justify-center border border-gray-200 border-dashed rounded-xl bg-white/50 shadow-sm">
             <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-4" />
             <p className="text-gray-500 font-medium">Initializing...</p>
@@ -1095,8 +1053,7 @@ export default function Dashboard() {
         )}
 
         
-
-      </div>
+    </div>
     </main>
   );
 }
