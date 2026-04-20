@@ -827,11 +827,16 @@ def analyze_pair(target_ticker, feature_ticker, target_df, feature_df, batch_mod
                 period_net_return -= fee
                 trades += turnover
                 
-            if active_trade:
+            if active_trade and gross_returns[i] < 0.5:
                 active_trade['cum_gross'] += gross_returns[i]
-    
+            else:
+                gross_returns[i] = 0.0
+                period_net_return = 0.0
+          
+
             net_returns[i] = period_net_return
     
+
         bt_df['Gross_Return'] = gross_returns
         bt_df['Net_Return'] = net_returns
         bt_df['Cumulative_Gross'] = bt_df['Gross_Return'].cumsum()
