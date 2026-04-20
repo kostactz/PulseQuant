@@ -6,7 +6,7 @@
 
 ## Mission
 
-It implements a UI and tradingn Engine, designed for medium-frequency trading of cointegrated crypto pairs, featuring real-time state estimation and automated execution logic.
+It implements a UI and trading engine, designed for medium-frequency trading of cointegrated crypto pairs, featuring real-time state estimation and automated execution logic.
 
 ### Technical Highlights
 - **Python Engine (`engine.py`):** A custom event-driven engine featuring:
