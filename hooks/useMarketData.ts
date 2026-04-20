@@ -105,6 +105,11 @@ export function useMarketData(connectEnabled: boolean = true, tradingMode: Tradi
           
           // Fake execution report back to engine to keep the mock portfolio running
           if (intent.action === 'PLACE_ORDER') {
+            const normalizedIntentSymbol = intent.symbol.toLowerCase();
+            const latestTick =
+              latestTickRefs.current[normalizedIntentSymbol] ??
+              latestTickRefs.current[intent.symbol];
+
             setTimeout(() => {
               if (onExecutionReportImmediateRef.current) {
                 onExecutionReportImmediateRef.current({
@@ -121,7 +126,7 @@ export function useMarketData(connectEnabled: boolean = true, tradingMode: Tradi
                     clientOrderId: intent.clientOrderId,
                     status: 'FILLED',
                     lastFilledQuantity: intent.quantity,
-                    lastFilledPrice: intent.price || (intent.side === 'BUY' ? latestTickRefs.current[intent.symbol]?.ask : latestTickRefs.current[intent.symbol]?.bid),
+                    lastFilledPrice: intent.price || (intent.side === 'BUY' ? latestTick?.ask : latestTick?.bid),
                     transactionTime: Date.now(),
                   });
                 }, 500);
