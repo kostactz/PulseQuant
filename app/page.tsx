@@ -383,7 +383,7 @@ export default function Dashboard() {
              <div className="flex items-center gap-3 ml-2">
                <div className={`w-3 h-3 rounded-full ${isReady ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`} />
                <span className="text-sm font-medium text-gray-700">
-                 {isReady ? 'Engine Ready' : 'Booting Pandas...'}
+                 {isReady ? 'Engine Ready' : 'Initializing...'}
                </span>
              </div>
           </div>
@@ -721,7 +721,7 @@ export default function Dashboard() {
                 <div>
                   <p className="text-sm text-gray-500 font-medium">Target Price</p>
                   <p className="text-xl font-semibold font-mono">
-                    {currentState.spread_metrics?.target_price?.toFixed(2) ?? "0.00"}
+                    {currentState.spread_metrics?.target_price?.toFixed(5) ?? "0.00"}
                   </p>
                 </div>
               </div>
@@ -732,7 +732,7 @@ export default function Dashboard() {
                 </div>
                 <div className="flex flex-col">
                   <p className="text-sm text-gray-500 font-medium">Feature Price</p>
-                  <p className="text-xl font-semibold font-mono">{currentState.spread_metrics?.feature_price?.toFixed(2) ?? '0.00'}</p>
+                  <p className="text-xl font-semibold font-mono">{currentState.spread_metrics?.feature_price?.toFixed(5) ?? '0.00'}</p>
                 </div>
               </div>
             </div>
@@ -832,12 +832,7 @@ export default function Dashboard() {
                    }`}>
                     <div className="flex items-center justify-between mb-4">
                       <div className="flex items-center gap-2">
-                        <div className={`p-1.5 rounded-lg ${
-                          isBlocked ? 'bg-red-100 text-red-600' : 'bg-emerald-100 text-emerald-600'
-                        }`}>
-                          {isBlocked ? <span className="inline-flex items-center"><AlertTriangle className="w-4 h-4" /></span> : <span className="inline-flex items-center"><CheckCircle className="w-4 h-4" /></span>}
-                        </div>
-                        <h3 className="text-sm font-bold text-gray-800">Dynamic Hurdle vs Current Spread</h3>
+                                                <h3 className="text-sm font-bold text-gray-800">Dynamic Hurdle vs Current Spread</h3>
                         <span className={`text-xs font-bold px-2.5 py-1 rounded-full ${
                           isBlocked
                             ? 'bg-red-500 text-white'
@@ -868,7 +863,7 @@ export default function Dashboard() {
                       <div>
                         <div className="flex justify-between text-xs mb-1">
                           <span className="font-semibold text-red-600 flex items-center gap-1">
-                            <span className="inline-flex items-center gap-2"><AlertTriangle className="w-3 h-3" /> <span>Dynamic Hurdle</span></span>
+                            <span className="inline-flex items-center gap-2"><span>Dynamic Hurdle</span></span>
                           </span>
                           <span className="font-mono font-bold text-red-600">{dynamicHurdleBps.toFixed(2)} bps</span>
                         </div>
@@ -887,7 +882,7 @@ export default function Dashboard() {
                           <span className={`font-semibold flex items-center gap-1 ${
                             isBlocked ? 'text-gray-500' : 'text-emerald-600'
                           }`}>
-                            <span className="inline-flex items-center gap-2"><Activity className="w-3 h-3" /> <span>Current Spread</span></span>
+                            <span className="inline-flex items-center gap-2"><span>Current Spread</span></span>
                           </span>
                           <span className={`font-mono font-bold ${
                             isBlocked ? 'text-gray-500' : 'text-emerald-600'

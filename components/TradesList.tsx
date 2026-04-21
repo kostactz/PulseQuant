@@ -110,19 +110,19 @@ export const TradesList: React.FC<TradesListProps> = ({ trades, cancellations = 
           <button className={`px-2 py-1 text-xs ${sideFilter === 'sell' ? 'bg-white shadow-sm' : ''}`} onClick={() => setSideFilter('sell')}>Sell</button>
         </div>
         <div className="flex items-center gap-2">
-          <input placeholder="reason filter" value={reasonQuery} onChange={(e) => setReasonQuery(e.target.value)} className="text-xs px-2 py-1 border rounded" />
-          <input type="number" min={0} placeholder="min rest s" value={minRestSec} onChange={(e) => setMinRestSec(Number(e.target.value || 0))} className="w-20 text-xs px-2 py-1 border rounded" />
+          <input placeholder="reason filter" value={reasonQuery} onChange={(e) => setReasonQuery(e.target.value)} className="text-xs w-30 px-2 py-1 border rounded" />
+          <input type="number" min={0} placeholder="min rest s" value={minRestSec} onChange={(e) => setMinRestSec(Number(e.target.value || 0))} className="w-14 text-xs px-2 py-1 border rounded" />
         </div>
       </div>
 
       {/* Desktop header */}
-      <div className="hidden sm:grid grid-cols-[95px_95px_95px_110px_90px_1fr] text-gray-500 font-medium pb-2 border-b border-gray-200 mb-2 text-xs uppercase tracking-wider">
+      <div className="hidden sm:grid grid-cols-[95px_95px_95px_95px_90px_1fr] text-gray-500 font-medium pb-2 border-b border-gray-200 mb-2 text-xs uppercase tracking-wider">
         <div>Time</div>
         <div>Event</div>
         <div>Side</div>
         <div className="text-right">Price</div>
         <div className="text-right">Qty</div>
-        <div className="text-right">Debug</div>
+        <div className="text-right">Info</div>
       </div>
 
       {/* Desktop list */}

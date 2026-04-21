@@ -22,7 +22,7 @@ export function ManualTradePanel({ onTrade, targetAsset, featureAsset, disabled 
     <div className="bg-white border border-gray-200 shadow-sm p-5 rounded-xl mt-6">
       <h2 className="text-lg font-bold text-gray-900 mb-2">Manual Execution</h2>
       <p className="text-sm text-gray-500 mb-4">
-        Manually trigger the engine to enter or exit a spread position using the calculated hedge ratio (beta).
+        Manually enter or exit a spread position.
       </p>
 
       <div className="flex flex-col md:flex-row gap-4 items-center">
@@ -48,7 +48,7 @@ export function ManualTradePanel({ onTrade, targetAsset, featureAsset, disabled 
             className="flex-1 md:flex-none flex items-center justify-center gap-2 px-5 py-2.5 rounded-lg font-medium transition-colors bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm shadow-emerald-500/30"
           >
             <Play className="w-4 h-4" />
-            <span>Long {targetAsset} / Short {featureAsset}</span>
+            <span>Long {targetAsset}</span>
           </button>
           <button
             onClick={() => handleTrade('sell')}
@@ -56,7 +56,7 @@ export function ManualTradePanel({ onTrade, targetAsset, featureAsset, disabled 
             className="flex-1 md:flex-none flex items-center justify-center gap-2 px-5 py-2.5 rounded-lg font-medium transition-colors bg-red-600 text-white hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm shadow-red-500/30"
           >
             <Activity className="w-4 h-4" />
-            <span>Short {targetAsset} / Long {featureAsset}</span>
+            <span>Short {targetAsset}</span>
           </button>
         </div>
       </div>

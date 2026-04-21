@@ -45,7 +45,7 @@ export const OrderBookDepth: React.FC<OrderBookDepthProps> = ({ bids, asks, curr
                   style={{ width: `${width}%` }} 
                 />
                 <div className="text-left text-gray-600 z-10 pl-2">-</div>
-                <div className={`text-center z-10 font-medium ${isActive ? 'text-blue-600' : 'text-red-600'}`}>{price.toFixed(2)}</div>
+                <div className={`text-center z-10 font-medium ${isActive ? 'text-blue-600' : 'text-red-600'}`}>{price.toFixed(4)}</div>
                 <div className="text-right text-gray-600 z-10 pr-2">{Math.round(vol)}</div>
               </div>
             );
@@ -55,7 +55,7 @@ export const OrderBookDepth: React.FC<OrderBookDepthProps> = ({ bids, asks, curr
         {/* Spread Indicator */}
         <div className="flex items-center justify-center py-2 my-1 border-y border-gray-200 bg-gray-50 z-20">
           <span className="text-xs text-gray-500">
-            Spread: {currentAsk && currentBid ? Math.abs(currentAsk - currentBid).toFixed(2) : Math.abs(asks[0][0] - bids[0][0]).toFixed(2)}
+            Spread: {currentAsk && currentBid ? Math.abs(currentAsk - currentBid).toFixed(5) : Math.abs(asks[0][0] - bids[0][0]).toFixed(5)}
           </span>
         </div>
 
@@ -72,7 +72,7 @@ export const OrderBookDepth: React.FC<OrderBookDepthProps> = ({ bids, asks, curr
                   style={{ width: `${width}%` }} 
                 />
                 <div className="text-left text-gray-600 z-10 pl-2">{Math.round(vol)}</div>
-                <div className={`text-center z-10 font-medium ${isActive ? 'text-blue-600' : 'text-emerald-600'}`}>{price.toFixed(2)}</div>
+                <div className={`text-center z-10 font-medium ${isActive ? 'text-blue-600' : 'text-emerald-600'}`}>{price.toFixed(4)}</div>
                 <div className="text-right text-gray-600 z-10 pr-2">-</div>
               </div>
             );
