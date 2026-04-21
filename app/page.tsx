@@ -8,6 +8,7 @@ import { SecuritySetupModal } from '@/components/SecuritySetupModal';
 import { RealtimeChart } from '@/components/RealtimeChart';
 import { OrderBookDepth } from '@/components/OrderBookDepth';
 import { TradesList } from '@/components/TradesList';
+import { ManualTradePanel } from '@/components/ManualTradePanel';
 import { Maximize, Activity, TrendingUp, TrendingDown, DollarSign, Play, Pause, Trash2, Settings2, RefreshCw, Briefcase, ArrowUpRight, ArrowDownRight, Bot, Code, X, Video, Zap, Lock, AlertTriangle, CheckCircle } from 'lucide-react';
 import { clearRuntimeCredentials, clearCredentials, getRuntimeCredentials } from '@/lib/security/credentials';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
@@ -26,13 +27,17 @@ export default function Dashboard() {
   const handleIntentRef = useRef<((intent: any) => void) | null>(null);
   
   const executeModeSwitch = (newMode: 'PAPER' | 'TESTNET' | 'MAINNET') => {
+    if (tradingMode !== 'PAPER' && newMode !== 'PAPER' && tradingMode !== newMode) {
+      clearRuntimeCredentials();
+    }
+
     setTradingMode(newMode);
     clearData();
     clearBuffer();
 
     if (newMode === 'PAPER') {
       setIsUnlocked(true);
-    } else if (getRuntimeCredentials()) {
+    } else if (getRuntimeCredentials(newMode)) {
       setIsUnlocked(true);
     } else {
       setIsUnlocked(false);
@@ -303,6 +308,7 @@ export default function Dashboard() {
         <SecuritySetupModal
           onSuccess={() => setIsUnlocked(true)}
           onSkip={() => executeModeSwitch('PAPER')}
+          env={tradingMode === 'PAPER' ? 'TESTNET' : tradingMode}
         />
       )}
       
@@ -326,10 +332,10 @@ export default function Dashboard() {
                 <span className="hidden sm:inline">Lock</span>
               </button>
             )}
-            {(tradingMode === 'TESTNET' || tradingMode === 'MAINNET') && getRuntimeCredentials() && (
+            {(tradingMode === 'TESTNET' || tradingMode === 'MAINNET') && getRuntimeCredentials(tradingMode) && (
               <button
                 onClick={() => {
-                  clearCredentials();
+                  clearCredentials(tradingMode);
                   clearRuntimeCredentials();
                   setIsUnlocked(false);
                 }}
@@ -840,6 +846,16 @@ export default function Dashboard() {
                     </div>
 
                     <div className="space-y-3">
+                      {currentState?.toxicity_flag && (
+                        <div className="bg-red-50 border border-red-200 rounded-lg p-3 flex items-start gap-3">
+                          <AlertTriangle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
+                          <div>
+                            <p className="text-sm font-bold text-red-800">Toxicity Gating Active</p>
+                            <p className="text-xs text-red-600">Engine blocked: {currentState?.toxic_reason}</p>
+                          </div>
+                        </div>
+                      )}
+
                       {/* Dynamic Hurdle bar */}
                       <div>
                         <div className="flex justify-between text-xs mb-1">
