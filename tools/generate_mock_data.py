@@ -1,4 +1,5 @@
 import json
+import os
 import random
 import time
 import argparse
@@ -11,6 +12,7 @@ def generate():
 
     out = f"test/resources/captures/mock_dual_asset_{args.target}_{args.feature}.jsonl"
     print(f"Generating mock data to {out}")
+    os.makedirs(os.path.dirname(out), exist_ok=True)
     
     start_ts = int(time.time() * 1000)
     
