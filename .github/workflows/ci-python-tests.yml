@@ -32,7 +32,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest pytest-benchmark numpy pytest-cov
+          pip install -r public/python/requirements.txt
 
       - name: Run pytest suite
         run: python -m pytest public/python/tests/ -q
