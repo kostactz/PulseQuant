@@ -382,7 +382,7 @@ class SignalGenerator:
         # slippage_bps is treated as a per-order execution cost, so apply it to all 4 legs.
         taker_entry_fee_bps = (self.taker_fee * 2) * 10_000
         taker_exit_fee_bps = (self.taker_fee * 2) * 10_000
-        round_trip_slippage_bps = self.slippage_bps * 4
+        round_trip_slippage_bps = self.slippage_bps * 2
         hold_s = min(self.half_life_seconds, 8 * 3600)
         funding_bps = abs(self.current_funding_rate) * (hold_s / (8 * 3600)) * 10_000
         hurdle = taker_entry_fee_bps + taker_exit_fee_bps + round_trip_slippage_bps + funding_bps
@@ -670,7 +670,17 @@ class BackgroundAnalyticsWorker:
             is_coint = p_value < 0.05
             is_hl_valid = half_life_periods * 60.0 < self.max_half_life
             
-            is_toxic = not (is_coint and is_hl_valid and (hurst < 0.5))
+            # Softened Hurst threshold (from 0.5 to 0.55) to tolerate brief random walk
+            is_toxic = not (is_coint and is_hl_valid and (hurst < 0.55))
+            
+            toxic_reason = 'None'
+            if is_toxic:
+                if not is_coint:
+                    toxic_reason = 'Not cointegrated (p_value >= 0.05)'
+                elif not is_hl_valid:
+                    toxic_reason = 'Half-life too long'
+                elif hurst >= 0.55:
+                    toxic_reason = 'High Hurst exponent (Random Walk/Trend)'
             
             # Clean floating point infinites before sending to Pyodide
             if np.isinf(half_life_periods) or np.isnan(half_life_periods):
@@ -683,6 +693,7 @@ class BackgroundAnalyticsWorker:
             # Publish back to the main event bus
             self.bus.publish('REGIME_CHANGE', {
                 'toxic': bool(is_toxic),
+                'toxic_reason': toxic_reason,
                 'adf_pvalue': float(p_value),
                 'half_life': float(half_life_periods),
                 'hurst': float(hurst)
@@ -1244,6 +1255,7 @@ class TradingEngine:
                 'adf_pvalue': self.latest_regime.get('adf_pvalue')
             },
             'toxicity_flag': self.signal_generator.is_toxic,
+            'toxic_reason': getattr(self.signal_generator, 'toxic_reason', 'None'),
             'strategy_params': {
                 'sigma_threshold': getattr(self.signal_generator, 'entry_threshold', 2.0),
                 'min_entry_spread_bps': getattr(self.signal_generator, 'min_entry_spread_bps', 0.0),
