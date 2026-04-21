@@ -383,7 +383,7 @@ export default function Dashboard() {
              <div className="flex items-center gap-3 ml-2">
                <div className={`w-3 h-3 rounded-full ${isReady ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`} />
                <span className="text-sm font-medium text-gray-700">
-                 {isReady ? 'Engine Ready' : 'Booting Pandas...'}
+                 {isReady ? 'Engine Ready' : 'Initializing...'}
                </span>
              </div>
           </div>

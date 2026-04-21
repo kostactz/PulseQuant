@@ -3,7 +3,7 @@ import { ErrorBoundary } from '@/components/ErrorBoundary';
 import './globals.css'; // Global styles
 
 export const metadata: Metadata = {
-  title: 'PulseQuant | BTC-USDT',
+  title: 'PulseQuant',
   description: '',
 };
 
