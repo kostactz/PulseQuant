@@ -686,7 +686,7 @@ export default function Dashboard() {
               onTrade={(side, bps) => executeTrade(side, bps)}
               targetAsset={targetAsset}
               featureAsset={featureAsset}
-              disabled={!isReady || currentState.execution_state !== 'IDLE'}
+              disabled={!isReady || !currentState?.spread_metrics}
             />
 
             {/* General Metrics */}

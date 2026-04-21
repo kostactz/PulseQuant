@@ -219,6 +219,22 @@ class StatArbModel:
         if self.bivariate.count < min(50, self.w_beta // 4):
             # Publish warmup debug so backtests show warmup progress
             self.bus.publish('LOG', {'level': 'DEBUG', 'event': 'MODEL_WARMUP', 'message': f'Kalman warmup {self.bivariate.count}/{min(50, self.w_beta // 4)}', 'timestamp': timestamp})
+            self.bus.publish('MODEL_UPDATED', {
+                'timestamp': timestamp,
+                'target_price': self.target_price,
+                'feature_price': self.feature_price,
+                'target_ask': self.target_ask,
+                'target_bid': self.target_bid,
+                'feature_ask': self.feature_ask,
+                'feature_bid': self.feature_bid,
+                'beta': 1.0,
+                'alpha': 0.0,
+                'spread': 0.0,
+                'spread_mean': 0.0,
+                'spread_std': 0.0,
+                'z_score': 0.0,
+                'is_ready': False
+            })
             return
 
         if not self.is_ready:
@@ -963,14 +979,15 @@ class ExecutionManager:
 
 
     def _on_model_update(self, payload: dict):
+        self.target_price = float(payload.get('target_price', 0.0))
+        self.feature_price = float(payload.get('feature_price', 0.0))
+        self.target_bid = float(payload.get('target_bid', self.target_price))
+        self.target_ask = float(payload.get('target_ask', self.target_price))
+        self.feature_bid = float(payload.get('feature_bid', self.feature_price))
+        self.feature_ask = float(payload.get('feature_ask', self.feature_price))
+
         if payload.get('is_ready'):
             self.latest_beta = float(payload.get('beta', 1.0))
-            self.target_price = float(payload.get('target_price', 0.0))
-            self.feature_price = float(payload.get('feature_price', 0.0))
-            self.target_bid = float(payload.get('target_bid', self.target_price))
-            self.target_ask = float(payload.get('target_ask', self.target_price))
-            self.feature_bid = float(payload.get('feature_bid', self.feature_price))
-            self.feature_ask = float(payload.get('feature_ask', self.feature_price))
 
     def _on_signal(self, payload: dict):
         direction = payload.get('direction')
