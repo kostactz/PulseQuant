@@ -681,6 +681,14 @@ export default function Dashboard() {
                 
             </div>
 
+            {/* Manual Trade Panel */}
+            <ManualTradePanel
+              onTrade={(side, bps) => executeTrade(side, bps)}
+              targetAsset={targetAsset}
+              featureAsset={featureAsset}
+              disabled={!isReady || currentState.execution_state !== 'IDLE'}
+            />
+
             {/* General Metrics */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               
