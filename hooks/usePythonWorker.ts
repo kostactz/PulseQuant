@@ -182,6 +182,7 @@ export function usePythonWorker(onIntent?: (intent: any) => void) {
 
   const executeTrade = useCallback((side: 'buy' | 'sell', bps: number) => {
     if (isReady && workerRef.current) {
+      logger.info(`Manual trade initiated from UI: ${side.toUpperCase()} ${bps} bps`);
       workerRef.current.postMessage({ type: 'TRADE', side, bps });
     }
   }, [isReady]);

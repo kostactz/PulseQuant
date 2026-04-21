@@ -1096,7 +1096,23 @@ class ExecutionManager:
 
     def _on_order_update(self, payload: dict):
         status = payload.get('status')
+        symbol = payload.get('symbol', 'UNKNOWN')
+        side = payload.get('side', 'UNKNOWN')
+        order_id = payload.get('order_id', payload.get('clientOrderId', 'UNKNOWN'))
+        qty = payload.get('qty', payload.get('quantity', payload.get('origQty', 0.0)))
+        
+        if status == 'NEW':
+            self.bus.publish('LOG', {'level': 'INFO', 'message': f'Order Initiated: {side} {qty} {symbol} [OrderID: {order_id}]'})
+        elif status == 'PARTIALLY_FILLED':
+            filled = payload.get('filled_qty', payload.get('executedQty', 0.0))
+            self.bus.publish('LOG', {'level': 'INFO', 'message': f'Order Updated (Partial Fill): {side} {filled}/{qty} {symbol} [OrderID: {order_id}]'})
+        elif status in ['CANCELED', 'REJECTED', 'EXPIRED']:
+            self.bus.publish('LOG', {'level': 'ERROR', 'message': f'Order {status}: {side} {qty} {symbol} [OrderID: {order_id}]'})
+
         if status == 'FILLED':
+            price = payload.get('price', payload.get('avg_price', 0.0))
+            self.bus.publish('LOG', {'level': 'INFO', 'message': f'Order Executed (Filled): {side} {qty} {symbol} @ {price} [OrderID: {order_id}]'})
+
             if self.state == 'HEDGED' and self.position_entry_ts == 0:
                 self.position_entry_ts = float(payload.get('transaction_time', payload.get('transactionTime', payload.get('timestamp', 0))))
 
