@@ -42,26 +42,26 @@ def test_async_legging_state_machine():
     
     # 3. Simulate Fills
     bus.publish('ORDER_UPDATE', {
-        'order_id': maker_intent.get('order_id', 'unknown'),
+        'order_id': maker_intent.get('order_id') or maker_intent.get('clientOrderId') or 'unknown',
         'symbol': 'BTC',
         'status': 'FILLED',
         'side': 'BUY',
-        'filled_qty': maker_intent['qty'],
+        'filled_qty': maker_intent.get('qty') or maker_intent.get('quantity'),
         'price': maker_intent['price']
     })
     
     bus.publish('ORDER_UPDATE', {
-        'order_id': taker_intent.get('order_id', 'taker_1'),
+        'order_id': taker_intent.get('order_id') or taker_intent.get('clientOrderId') or 'taker_1',
         'symbol': 'ETH',
         'status': 'FILLED',
         'side': 'SELL',
-        'filled_qty': taker_intent['qty'],
+        'filled_qty': taker_intent.get('qty') or taker_intent.get('quantity'),
         'price': 10.0
     })
     
     # 5. Trigger Close
-    portfolio.positions['BTC'] = maker_intent['qty']
-    portfolio.positions['ETH'] = -taker_intent['qty']
+    portfolio.positions['BTC'] = maker_intent.get('qty') or maker_intent.get('quantity')
+    portfolio.positions['ETH'] = -(taker_intent.get('qty') or taker_intent.get('quantity'))
     
     bus.publish('SIGNAL_GENERATED', {'direction': 'CLOSE_SPREAD'})
     assert exec_mgr.state == 'CLOSING'

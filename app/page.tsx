@@ -8,6 +8,7 @@ import { SecuritySetupModal } from '@/components/SecuritySetupModal';
 import { RealtimeChart } from '@/components/RealtimeChart';
 import { OrderBookDepth } from '@/components/OrderBookDepth';
 import { TradesList } from '@/components/TradesList';
+import { ManualTradePanel } from '@/components/ManualTradePanel';
 import { Maximize, Activity, TrendingUp, TrendingDown, DollarSign, Play, Pause, Trash2, Settings2, RefreshCw, Briefcase, ArrowUpRight, ArrowDownRight, Bot, Code, X, Video, Zap, Lock, AlertTriangle, CheckCircle } from 'lucide-react';
 import { clearRuntimeCredentials, clearCredentials, getRuntimeCredentials } from '@/lib/security/credentials';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
@@ -26,13 +27,17 @@ export default function Dashboard() {
   const handleIntentRef = useRef<((intent: any) => void) | null>(null);
   
   const executeModeSwitch = (newMode: 'PAPER' | 'TESTNET' | 'MAINNET') => {
+    if (tradingMode !== 'PAPER' && newMode !== 'PAPER' && tradingMode !== newMode) {
+      clearRuntimeCredentials();
+    }
+
     setTradingMode(newMode);
     clearData();
     clearBuffer();
 
     if (newMode === 'PAPER') {
       setIsUnlocked(true);
-    } else if (getRuntimeCredentials()) {
+    } else if (getRuntimeCredentials(newMode)) {
       setIsUnlocked(true);
     } else {
       setIsUnlocked(false);
@@ -303,43 +308,44 @@ export default function Dashboard() {
         <SecuritySetupModal
           onSuccess={() => setIsUnlocked(true)}
           onSkip={() => executeModeSwitch('PAPER')}
+          env={tradingMode as 'TESTNET' | 'MAINNET'}
         />
       )}
       
       <div className={`max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 space-y-6 ${!isUnlocked ? 'blur-sm pointer-events-none' : ''}`}>
-        <header className="flex flex-col sm:flex-row sm:items-center sm:justify-between border-b border-gray-200 pb-4 gap-4">
+        <header className="flex flex-col sm:flex-row sm:items-center sm:justify-between border-b border-gray-100 pb-4 gap-x-4 gap-y-4">
           <div>
             <h1 className="text-2xl font-semibold tracking-tight">PulseQuant Dashboard</h1>
             <p className="text-sm text-gray-500">Stat Arb Engine via Pyodide WASM</p>
           </div>
-          <div className="flex flex-wrap items-center gap-4">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-4">
             {tradingMode !== 'PAPER' && (
               <button
                 onClick={() => {
                   clearRuntimeCredentials();
                   setIsUnlocked(false);
                 }}
-                className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-semibold transition-all shadow-sm bg-gray-100 text-gray-700 border border-gray-200 hover:bg-gray-200"
+                className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-semibold transition-all shadow-sm bg-gray-100 text-gray-700 border border-gray-100 hover:bg-gray-100"
                 title="Lock Application"
               >
                 <Lock className="w-4 h-4" />
                 <span className="hidden sm:inline">Lock</span>
               </button>
             )}
-            {(tradingMode === 'TESTNET' || tradingMode === 'MAINNET') && getRuntimeCredentials() && (
+            {(tradingMode === 'TESTNET' || tradingMode === 'MAINNET') && getRuntimeCredentials(tradingMode) && (
               <button
                 onClick={() => {
-                  clearCredentials();
+                  clearCredentials(tradingMode);
                   clearRuntimeCredentials();
                   setIsUnlocked(false);
                 }}
-                className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-semibold transition-all shadow-sm bg-red-100 text-red-700 border border-red-200 hover:bg-red-200"
+                className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-semibold transition-all shadow-sm bg-red-100 text-red-700 border border-red-100 hover:bg-red-100"
                 title="Rotate Credentials"
               >
                 <span className="hidden sm:inline">Rotate Credentials</span>
               </button>
             )}
-            <div className="flex items-center bg-gray-100 p-1 rounded-lg border border-gray-200">
+            <div className="flex items-center bg-gray-100 p-1 rounded-lg border border-gray-100">
               <button
                 onClick={() => handleModeSwitch('PAPER')}
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-semibold transition-all ${
@@ -355,7 +361,7 @@ export default function Dashboard() {
                 onClick={() => handleModeSwitch('TESTNET')}
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-semibold transition-all ${
                   tradingMode === 'TESTNET' 
-                    ? 'bg-amber-100 text-amber-700 shadow-sm border border-amber-200' 
+                    ? 'bg-amber-100 text-amber-700 shadow-sm border border-amber-100' 
                     : 'text-gray-500 hover:text-gray-700'
                 }`}
               >
@@ -385,7 +391,7 @@ export default function Dashboard() {
 
         {showLiveConfirm && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-            <div className="bg-white rounded-xl shadow-2xl p-6 max-w-md w-full mx-4 border border-red-200">
+            <div className="bg-white rounded-xl shadow-2xl p-6 max-w-md w-full mx-4 border border-red-100">
               <div className="flex items-center gap-3 text-red-600 mb-4">
                 <Zap className="w-6 h-6" />
                 <h2 className="text-xl font-bold">Enable Live Trading?</h2>
@@ -423,7 +429,7 @@ export default function Dashboard() {
         )}
 
          {/* Control Bar */}
-         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between bg-white border border-gray-200 shadow-sm p-4 rounded-xl gap-4">
+         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between bg-white border border-gray-100 shadow-sm p-4 rounded-xl gap-x-4 gap-y-4">
            <div className="flex flex-wrap items-center gap-2">
             <button
               onClick={() => setIsPlaying(!isPlaying)}
@@ -477,7 +483,7 @@ export default function Dashboard() {
             </button>
           </div>
           
-           <div className="flex items-center gap-4 text-sm text-gray-500">
+           <div className="flex items-center gap-x-4 gap-y-4 text-sm text-gray-500">
              <div className="flex items-center gap-2">
               <Settings2 className="w-4 h-4" />
               <span>UI Refresh Rate:</span>
@@ -516,7 +522,7 @@ export default function Dashboard() {
             {/* Top simulator & metrics (hidden on mobile unless selected) */}
             <div className={`sm:block ${mobileView === 'sim' ? 'block' : 'hidden'}`}>
               {/* Stat Arb Trading Simulator Panel */}
-              <div className="bg-white border border-gray-200 shadow-sm p-5 rounded-xl">
+              <div className="bg-white border border-gray-100 shadow-sm p-5 rounded-xl">
              <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
                 <div className="flex items-center gap-3">
                   <div className="p-2 bg-blue-100 rounded-lg">
@@ -528,7 +534,7 @@ export default function Dashboard() {
                        tradingMode === 'TESTNET' ? 'Binance Testnet Engine' : 
                        'Binance Mainnet Engine'}
                     </h2>
-                    <div className="flex gap-4 items-center">
+                    <div className="flex gap-x-4 gap-y-4 items-center">
                       <div className="flex flex-col">
                         <div className="text-2xl font-bold text-gray-900 tracking-tight">
                           ${currentState.portfolio_value?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || '100,000.00'}
@@ -541,11 +547,11 @@ export default function Dashboard() {
                         )}
                       </div>
                       <div className="flex gap-2 items-center text-sm ml-4 border-l border-gray-300 pl-4">
-                         <select className="bg-gray-50 border border-gray-200 rounded p-1" value={targetAsset} onChange={(e) => handlePairChange(e.target.value, featureAsset)}>
+                         <select className="bg-gray-50 border border-gray-100 rounded p-1" value={targetAsset} onChange={(e) => handlePairChange(e.target.value, featureAsset)}>
                              {AVAILABLE_ASSETS.map(a => <option key={a} disabled={a === featureAsset}>{a}</option>)}
                          </select>
                          <span className="text-gray-500">vs</span>
-                         <select className="bg-gray-50 border border-gray-200 rounded p-1" value={featureAsset} onChange={(e) => handlePairChange(targetAsset, e.target.value)}>
+                         <select className="bg-gray-50 border border-gray-100 rounded p-1" value={featureAsset} onChange={(e) => handlePairChange(targetAsset, e.target.value)}>
                              {AVAILABLE_ASSETS.map(a => <option key={a} disabled={a === targetAsset}>{a}</option>)}
                          </select>
                       </div>
@@ -553,7 +559,7 @@ export default function Dashboard() {
                   </div>
                 </div>
 
-                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-x-4 gap-y-4">
                   <div>
                     <div className="text-xs text-gray-400 uppercase tracking-wider font-semibold mb-1">Cash</div>
                     <div className="font-mono text-gray-700">${currentState.capital?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || '100,000.00'}</div>
@@ -570,7 +576,7 @@ export default function Dashboard() {
                       {currentState.spread_metrics?.beta != null ? currentState.spread_metrics.beta.toFixed(4) : (
                         <span className="text-gray-400 flex items-center gap-1">
                           <div className="w-3 h-3 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" />
-                          <span>Calc...</span>
+                          <span>...</span>
                         </span>
                       )}
                     </div>
@@ -581,7 +587,7 @@ export default function Dashboard() {
                       {currentState.spread_metrics?.hurst != null ? currentState.spread_metrics.hurst.toFixed(4) : (
                         <span className="text-gray-400 flex items-center gap-1">
                           <div className="w-3 h-3 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" />
-                          <span>Calc...</span>
+                          <span>...</span>
                         </span>
                       )}
                     </div>
@@ -592,7 +598,7 @@ export default function Dashboard() {
                       {currentState.spread_metrics?.half_life != null ? currentState.spread_metrics.half_life.toFixed(1) : (
                         <span className="text-gray-400 flex items-center gap-1">
                           <div className="w-3 h-3 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" />
-                          <span>Calc...</span>
+                          <span>...</span>
                         </span>
                       )}
                     </div>
@@ -603,7 +609,7 @@ export default function Dashboard() {
                       {currentState.spread_metrics?.adf_pvalue != null ? currentState.spread_metrics.adf_pvalue.toFixed(4) : (
                         <span className="text-gray-400 flex items-center gap-1">
                           <div className="w-3 h-3 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" />
-                          <span>Calc...</span>
+                          <span>...</span>
                         </span>
                       )}
                     </div>
@@ -638,7 +644,7 @@ export default function Dashboard() {
               </div>
 
               {/* Strategy Settings & Positions */}
-               <div className="mt-4 pt-4 border-t border-gray-200 flex flex-wrap items-start justify-between gap-4">
+               <div className="mt-4 pt-4 border-t border-gray-100 flex flex-wrap items-start justify-between gap-x-4 gap-y-4">
                 <div className="flex flex-col gap-2 flex-1">
                   <span className="text-sm font-medium text-gray-500">Active Positions:</span>
                   <div className="flex flex-wrap gap-3">
@@ -647,7 +653,7 @@ export default function Dashboard() {
                       const avgEntry = currentState.avg_entry_prices?.[sym] || 0;
                       const upnl = currentState.unrealized_pnl?.[sym] || 0;
                         return (
-                          <div key={sym} className="flex flex-col bg-gray-50 px-3 py-2 rounded-lg border border-gray-200 shadow-sm min-w-0 w-full sm:w-auto sm:min-w-[140px]">
+                          <div key={sym} className="flex flex-col bg-gray-50 px-3 py-2 rounded-lg border border-gray-100 shadow-sm min-w-0 w-full sm:w-auto sm:min-w-[140px]">
                           <div className="flex justify-between items-center mb-1">
                             <span className="text-xs font-bold text-gray-700">{sym}</span>
                             <span className={`font-mono text-sm font-semibold ${(pos as number) > 0 ? 'text-emerald-600' : 'text-red-600'}`}>
@@ -675,10 +681,18 @@ export default function Dashboard() {
                 
             </div>
 
+            {/* Manual Trade Panel */}
+            <ManualTradePanel
+              onTrade={(side, bps) => executeTrade(side, bps)}
+              targetAsset={targetAsset}
+              featureAsset={featureAsset}
+              disabled={!isReady || !currentState?.spread_metrics}
+            />
+
             {/* General Metrics */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-4 mt-4">
               
-             <div className="bg-white border border-gray-200 shadow-sm p-4 rounded-xl flex items-center gap-4">
+             <div className="bg-white border border-gray-100 shadow-sm p-4 rounded-xl flex items-center gap-x-4 gap-y-4">
                 <div className="p-3 bg-emerald-100 text-emerald-600 rounded-lg hidden sm:block">
                   <Activity className="w-6 h-6" />
                 </div>
@@ -688,7 +702,7 @@ export default function Dashboard() {
                 </div>
               </div>
 
-             <div className="bg-white border border-gray-200 shadow-sm p-4 rounded-xl flex items-center gap-4">
+             <div className="bg-white border border-gray-100 shadow-sm p-4 rounded-xl flex items-center gap-x-4 gap-y-4">
                 <div className="p-3 bg-purple-100 text-purple-600 rounded-lg hidden sm:block">
                   <TrendingUp className="w-6 h-6" />
                 </div>
@@ -700,7 +714,7 @@ export default function Dashboard() {
                 </div>
               </div>
 
-             <div className="bg-white border border-gray-200 shadow-sm p-4 rounded-xl flex items-center gap-4">
+             <div className="bg-white border border-gray-100 shadow-sm p-4 rounded-xl flex items-center gap-x-4 gap-y-4">
                 <div className="p-3 bg-pink-100 text-pink-600 rounded-lg hidden sm:block">
                   <DollarSign className="w-6 h-6" />
                 </div>
@@ -712,7 +726,7 @@ export default function Dashboard() {
                 </div>
               </div>
 
-             <div className="bg-white border border-gray-200 shadow-sm p-4 rounded-xl flex items-center gap-4">
+             <div className="bg-white border border-gray-100 shadow-sm p-4 rounded-xl flex items-center gap-x-4 gap-y-4">
                 <div className="p-3 bg-blue-100 text-blue-600 rounded-lg hidden sm:block">
                   <DollarSign className="w-6 h-6" />
                 </div>
@@ -736,11 +750,11 @@ export default function Dashboard() {
               const isBlocked = dynamicHurdleBps >= currentSpreadBps || currentSpreadBps < 0.001;
               const maxBar = Math.max(dynamicHurdleBps, currentSpreadBps, 1);
               return (
-                <div className="space-y-3">
+                <div className="space-y-3 mt-4">
                   {/* Row 1: PnL breakdown */}
-                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                 <div className="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-4">
                     {/* Gross PnL */}
-                     <div className="bg-white border border-gray-200 shadow-sm p-4 rounded-xl flex items-center gap-3">
+                     <div className="bg-white border border-gray-100 shadow-sm p-4 rounded-xl flex items-center gap-3">
                       <div className="p-2.5 bg-blue-100 text-blue-600 rounded-lg shrink-0">
                         <TrendingUp className="w-5 h-5" />
                       </div>
@@ -758,8 +772,8 @@ export default function Dashboard() {
                     {/* Net PnL */}
                      <div className={`border shadow-sm p-4 rounded-xl flex items-center gap-3 ${
                       netPnl < -50 ? 'bg-red-50 border-red-300' :
-                      netPnl < 0 ? 'bg-orange-50 border-orange-200' :
-                      'bg-white border-gray-200'
+                      netPnl < 0 ? 'bg-orange-50 border -orange-200' :
+                      'bg-white border-gray-100'
                     }`}>
                       <div className={`p-2.5 rounded-lg shrink-0 ${
                         netPnl < 0 ? 'bg-red-100 text-red-600' : 'bg-emerald-100 text-emerald-600'
@@ -778,7 +792,7 @@ export default function Dashboard() {
                     </div>
 
                     {/* Total Fees */}
-                     <div className="bg-white border border-gray-200 shadow-sm p-4 rounded-xl flex items-center gap-3">
+                     <div className="bg-white border border-gray-100 shadow-sm p-4 rounded-xl flex items-center gap-3">
                       <div className="p-2.5 bg-amber-100 text-amber-600 rounded-lg shrink-0">
                         <DollarSign className="w-5 h-5" />
                       </div>
@@ -793,7 +807,7 @@ export default function Dashboard() {
 
                     {/* Funding Paid */}
                      <div className={`border shadow-sm p-4 rounded-xl flex items-center gap-3 ${
-                      totalFunding > 10 ? 'bg-red-50 border-red-200' : 'bg-white border-gray-200'
+                      totalFunding > 10 ? 'bg-red-50 border-red-100' : 'bg-white border-gray-100'
                     }`}>
                       <div className={`p-2.5 rounded-lg shrink-0 ${
                         totalFunding > 0 ? 'bg-red-100 text-red-600' : 'bg-emerald-100 text-emerald-600'
@@ -814,7 +828,7 @@ export default function Dashboard() {
 
                   {/* Row 2: Dynamic Hurdle vs Spread */}
                  <div className={`border shadow-sm p-5 rounded-xl ${
-                     isBlocked ? 'bg-red-50 border-red-200' : 'bg-emerald-50 border-emerald-200'
+                     isBlocked ? 'bg-red-50 border-red-100' : 'bg-emerald-50 border-emerald-100'
                    }`}>
                     <div className="flex items-center justify-between mb-4">
                       <div className="flex items-center gap-2">
@@ -840,6 +854,16 @@ export default function Dashboard() {
                     </div>
 
                     <div className="space-y-3">
+                      {currentState?.toxicity_flag && (
+                        <div className="bg-red-50 border border-red-100 rounded-lg p-3 flex items-start gap-3">
+                          <AlertTriangle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
+                          <div>
+                            <p className="text-sm font-bold text-red-800">Toxicity Gating Active</p>
+                            <p className="text-xs text-red-600">Engine blocked: {currentState?.toxic_reason}</p>
+                          </div>
+                        </div>
+                      )}
+
                       {/* Dynamic Hurdle bar */}
                       <div>
                         <div className="flex justify-between text-xs mb-1">
@@ -899,21 +923,21 @@ export default function Dashboard() {
 
             {/* Trading Analytics (chart) - hidden on mobile unless selected */}
             <div className={`sm:block ${mobileView === 'chart' ? 'block' : 'hidden'}`}>
-              <div className="bg-white border border-gray-200 shadow-sm p-5 rounded-xl h-auto md:h-[500px] min-h-[320px]">
+              <div className="bg-white border border-gray-100 shadow-sm p-5 rounded-xl h-auto md:h-[500px] min-h-[320px] mt-4">
 
-               <div className="flex flex-col xl:flex-row xl:items-center justify-between mb-4 gap-4">
+               <div className="flex flex-col xl:flex-row xl:items-center justify-between mb-4 gap-x-4 gap-y-4">
                 <div className="flex flex-col gap-2">
                   <h2 className="text-sm font-medium text-gray-500">Stat Arb Spread & Z-Score</h2>
                   <div className="flex flex-wrap items-center gap-2">
-                    <label className="text-xs flex items-center gap-1 cursor-pointer bg-gray-50 border border-gray-200 rounded px-2 py-1 hover:bg-gray-100 select-none">
+                    <label className="text-xs flex items-center gap-1 cursor-pointer bg-gray-50 border border-gray-100 rounded px-2 py-1 hover:bg-gray-100 select-none">
                       <input type="checkbox" checked={autoScale} onChange={e => setAutoScale(e.target.checked)} className="accent-blue-500" />
                       Auto-Scale
                     </label>
-                    <label className="text-xs flex items-center gap-1 cursor-pointer bg-gray-50 border border-gray-200 rounded px-2 py-1 hover:bg-gray-100 select-none">
+                    <label className="text-xs flex items-center gap-1 cursor-pointer bg-gray-50 border border-gray-100 rounded px-2 py-1 hover:bg-gray-100 select-none">
                       <input type="checkbox" checked={followLive} onChange={e => setFollowLive(e.target.checked)} className="accent-blue-500" />
                       Follow Live
                     </label>
-                    <button onClick={() => chartRef.current?.fitContent()} className="text-xs bg-blue-50 text-blue-600 border border-blue-200 px-2 py-1 rounded hover:bg-blue-100 flex items-center gap-1">
+                    <button onClick={() => chartRef.current?.fitContent()} className="text-xs bg-blue-50 text-blue-600 border border-blue-100 px-2 py-1 rounded hover:bg-blue-100 flex items-center gap-1">
                       <span className="inline-flex items-center gap-2"><Maximize className="w-3 h-3"/> <span>Fit</span></span>
                     </button>
                   </div>
@@ -922,7 +946,7 @@ export default function Dashboard() {
                <div className="w-full h-[calc(100%-4.5rem)] min-h-0">
                 <ErrorBoundary
                   fallback={(error, resetError) => (
-                    <div className="w-full h-full border border-red-200 rounded-lg bg-red-50 p-4 flex flex-col justify-center">
+                    <div className="w-full h-full border border-red-100 rounded-lg bg-red-50 p-4 flex flex-col justify-center">
                       <p className="text-sm text-red-700 mb-3">Chart failed to load: {error.message}</p>
                       <button
                         onClick={resetError}
@@ -949,8 +973,8 @@ export default function Dashboard() {
 
             {/* Order Books + Trades grid - hidden on mobile unless selected */}
             <div className={`sm:block ${mobileView === 'books' ? 'block' : 'hidden'}`}>
-              <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-              <div className="bg-white border border-gray-200 shadow-sm p-5 rounded-xl h-auto md:h-[520px] lg:h-[1040px] lg:col-span-1 min-h-0">
+              <div className="grid grid-cols-1 lg:grid-cols-4 gap-x-4 gap-y-4 mt-4">
+              <div className="bg-white border border-gray-100 shadow-sm p-5 rounded-xl h-auto md:h-[520px] lg:h-[1040px] lg:col-span-1 min-h-0">
                 <h2 className="text-sm font-medium text-gray-500 mb-4">{targetAsset} Order Book</h2>
                 <div className="w-full h-[calc(100%-2rem)] min-h-0 overflow-y-auto">
                   <OrderBookDepth 
@@ -963,7 +987,7 @@ export default function Dashboard() {
                 </div>
               </div>
 
-              <div className="bg-white border border-gray-200 shadow-sm p-5 rounded-xl h-auto md:h-[520px] lg:h-[1040px] lg:col-span-1 min-h-0">
+              <div className="bg-white border border-gray-100 shadow-sm p-5 rounded-xl h-auto md:h-[520px] lg:h-[1040px] lg:col-span-1 min-h-0">
                 <h2 className="text-sm font-medium text-gray-500 mb-4">{featureAsset} Order Book</h2>
                 <div className="w-full h-[calc(100%-2rem)] min-h-0 overflow-y-auto">
                   <OrderBookDepth 
@@ -975,7 +999,7 @@ export default function Dashboard() {
                   />
                 </div>
               </div>
-              <div className="bg-white border border-gray-200 shadow-sm p-5 rounded-xl h-auto md:h-[520px] lg:h-[1040px] lg:col-span-2 min-h-0">
+              <div className="bg-white border border-gray-100 shadow-sm p-5 rounded-xl h-auto md:h-[520px] lg:h-[1040px] lg:col-span-2 min-h-0">
                 <h2 className="text-sm font-medium text-gray-500 mb-4">Orders Activity (Fills + Cancels + Pending)</h2>
                 <div className="w-full h-[calc(100%-2rem)] min-h-0">
                   <TradesList trades={currentState?.recent_trades ?? []} cancellations={[]} pendingOrders={currentState?.pending_orders ?? []} />
@@ -984,8 +1008,8 @@ export default function Dashboard() {
             </div>
 
             {/* Ad-Hoc Analysis Section */}
-            <div className="bg-white border border-gray-200 shadow-sm p-5 rounded-xl mt-6">
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
+            <div className="bg-white border border-gray-100 shadow-sm p-5 rounded-xl mt-4">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-x-4 gap-y-4 mb-6">
                 <div>
                   <h2 className="text-lg font-bold text-gray-900">Historical Ad-Hoc Analysis</h2>
                   <p className="text-sm text-gray-500">Run a 1-month retrospective analysis on the current pair to identify Z-score distribution and optimal sigma thresholds.</p>
@@ -1009,20 +1033,20 @@ export default function Dashboard() {
 
               {adhocResult && !adhocResult.error && (
                 <div className="space-y-6">
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                    <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-4">
+                    <div className="bg-gray-50 p-4 rounded-lg border border-gray-100">
                       <p className="text-xs text-gray-500 uppercase font-semibold">Total Data Points</p>
                       <p className="text-lg font-mono font-bold text-gray-900">{adhocResult.total_points?.toLocaleString()}</p>
                     </div>
-                    <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                    <div className="bg-gray-50 p-4 rounded-lg border border-gray-100">
                       <p className="text-xs text-gray-500 uppercase font-semibold">Z-Score Mean</p>
                       <p className="text-lg font-mono font-bold text-gray-900">{adhocResult.mean?.toFixed(4)}</p>
                     </div>
-                    <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                    <div className="bg-gray-50 p-4 rounded-lg border border-gray-100">
                       <p className="text-xs text-gray-500 uppercase font-semibold">Z-Score Std Dev</p>
                       <p className="text-lg font-mono font-bold text-gray-900">{adhocResult.std?.toFixed(4)}</p>
                     </div>
-                    <div className="bg-emerald-50 p-4 rounded-lg border border-emerald-200">
+                    <div className="bg-emerald-50 p-4 rounded-lg border border-emerald-100">
                       <p className="text-xs text-emerald-600 uppercase font-semibold">Recommended Sigma</p>
                       <p className="text-lg font-mono font-bold text-emerald-700">±{adhocResult.recommended_sigma?.toFixed(2)}</p>
                     </div>
@@ -1049,7 +1073,7 @@ export default function Dashboard() {
               )}
               
               {adhocResult?.error && (
-                <div className="bg-red-50 border border-red-200 p-4 rounded-lg text-red-700">
+                <div className="bg-red-50 border border-red-100 p-4 rounded-lg text-red-700">
                   <p className="font-bold">Analysis Failed</p>
                   <p className="text-sm">{adhocResult.error}</p>
                 </div>
@@ -1060,7 +1084,7 @@ export default function Dashboard() {
         </div>
         </div>
       ) : (
-          <div className="h-[400px] flex flex-col items-center justify-center border border-gray-200 border-dashed rounded-xl bg-white/50 shadow-sm">
+          <div className="h-[400px] flex flex-col items-center justify-center border border-gray-100 border-dashed rounded-xl bg-white/50 shadow-sm">
             <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-4" />
             <p className="text-gray-500 font-medium">Initializing...</p>
             <p className="text-sm text-gray-400 mt-2">Loading Python environment</p>

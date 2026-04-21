@@ -27,6 +27,13 @@ def validate():
     if stdout is None: sys.exit(1)
     
     # 2. Run Replay
+    import glob
+    data_files = glob.glob(capture_file)
+    print(f"Verified data file: {data_files}")
+    if not data_files:
+        print(f"CRITICAL ERROR: {capture_file} not found before replay.")
+        sys.exit(1)
+
     replay_cmd = f"{sys.executable} tools/replay.py --input {capture_file} --target SUSHIUSDT --feature CAKEUSDT --min-entry-spread 50 --sigma-threshold 2 --taker-fee 0.0005 --slippage-bps 10 --min-beta 0.1 --max-beta 2.0 --kelly-fraction 0.5"
     replay_output = run_command(replay_cmd)
     if replay_output is None: sys.exit(1)
@@ -46,6 +53,15 @@ def validate():
     wl_ratio = extract(r"Win/Loss Ratio:\s+(\d+\.\d+)", replay_output)
 
     print(f"Parsed Results: NAV={nav}, Trades={trades}, Entries={entries}, Sharpe={sharpe}, WL={wl_ratio}")
+
+    if trades == 0:
+        print("\nCRITICAL ERROR: Replay produced 0 trades.")
+        print("This usually indicates a mismatch in data contracts or logic break.")
+        print("Full Replay Output for debugging:")
+        print("-" * 40)
+        print(replay_output)
+        print("-" * 40)
+        sys.exit(1)
 
     # Benchmarks
     TARGET_TRADES = 146

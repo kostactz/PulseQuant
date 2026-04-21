@@ -219,6 +219,22 @@ class StatArbModel:
         if self.bivariate.count < min(50, self.w_beta // 4):
             # Publish warmup debug so backtests show warmup progress
             self.bus.publish('LOG', {'level': 'DEBUG', 'event': 'MODEL_WARMUP', 'message': f'Kalman warmup {self.bivariate.count}/{min(50, self.w_beta // 4)}', 'timestamp': timestamp})
+            self.bus.publish('MODEL_UPDATED', {
+                'timestamp': timestamp,
+                'target_price': self.target_price,
+                'feature_price': self.feature_price,
+                'target_ask': self.target_ask,
+                'target_bid': self.target_bid,
+                'feature_ask': self.feature_ask,
+                'feature_bid': self.feature_bid,
+                'beta': 1.0,
+                'alpha': 0.0,
+                'spread': 0.0,
+                'spread_mean': 0.0,
+                'spread_std': 0.0,
+                'z_score': 0.0,
+                'is_ready': False
+            })
             return
 
         if not self.is_ready:
@@ -382,7 +398,7 @@ class SignalGenerator:
         # slippage_bps is treated as a per-order execution cost, so apply it to all 4 legs.
         taker_entry_fee_bps = (self.taker_fee * 2) * 10_000
         taker_exit_fee_bps = (self.taker_fee * 2) * 10_000
-        round_trip_slippage_bps = self.slippage_bps * 4
+        round_trip_slippage_bps = self.slippage_bps * 2
         hold_s = min(self.half_life_seconds, 8 * 3600)
         funding_bps = abs(self.current_funding_rate) * (hold_s / (8 * 3600)) * 10_000
         hurdle = taker_entry_fee_bps + taker_exit_fee_bps + round_trip_slippage_bps + funding_bps
@@ -670,7 +686,17 @@ class BackgroundAnalyticsWorker:
             is_coint = p_value < 0.05
             is_hl_valid = half_life_periods * 60.0 < self.max_half_life
             
-            is_toxic = not (is_coint and is_hl_valid and (hurst < 0.5))
+            # Softened Hurst threshold (from 0.5 to 0.55) to tolerate brief random walk
+            is_toxic = not (is_coint and is_hl_valid and (hurst < 0.55))
+            
+            toxic_reason = 'None'
+            if is_toxic:
+                if not is_coint:
+                    toxic_reason = 'Not cointegrated (p_value >= 0.05)'
+                elif not is_hl_valid:
+                    toxic_reason = 'Half-life too long'
+                elif hurst >= 0.55:
+                    toxic_reason = 'High Hurst exponent (Random Walk/Trend)'
             
             # Clean floating point infinites before sending to Pyodide
             if np.isinf(half_life_periods) or np.isnan(half_life_periods):
@@ -683,6 +709,7 @@ class BackgroundAnalyticsWorker:
             # Publish back to the main event bus
             self.bus.publish('REGIME_CHANGE', {
                 'toxic': bool(is_toxic),
+                'toxic_reason': toxic_reason,
                 'adf_pvalue': float(p_value),
                 'half_life': float(half_life_periods),
                 'hurst': float(hurst)
@@ -760,8 +787,8 @@ class PortfolioManager:
             symbol = payload.get('symbol', '').upper()
             if not symbol:
                 return
-            qty = float(payload.get('filled_qty', 0.0))
-            price = float(payload.get('price', 0.0))
+            qty = float(payload.get('filled_qty') or payload.get('qty') or 0.0)
+            price = float(payload.get('price') or payload.get('avg_price') or 0.0)
             side = payload.get('side', '').upper()
             # Accept is_maker from replay EXECUTION_REPORT
             is_maker = bool(payload.get('is_maker', False))
@@ -952,14 +979,15 @@ class ExecutionManager:
 
 
     def _on_model_update(self, payload: dict):
+        self.target_price = float(payload.get('target_price', 0.0))
+        self.feature_price = float(payload.get('feature_price', 0.0))
+        self.target_bid = float(payload.get('target_bid', self.target_price))
+        self.target_ask = float(payload.get('target_ask', self.target_price))
+        self.feature_bid = float(payload.get('feature_bid', self.feature_price))
+        self.feature_ask = float(payload.get('feature_ask', self.feature_price))
+
         if payload.get('is_ready'):
             self.latest_beta = float(payload.get('beta', 1.0))
-            self.target_price = float(payload.get('target_price', 0.0))
-            self.feature_price = float(payload.get('feature_price', 0.0))
-            self.target_bid = float(payload.get('target_bid', self.target_price))
-            self.target_ask = float(payload.get('target_ask', self.target_price))
-            self.feature_bid = float(payload.get('feature_bid', self.feature_price))
-            self.feature_ask = float(payload.get('feature_ask', self.feature_price))
 
     def _on_signal(self, payload: dict):
         direction = payload.get('direction')
@@ -1026,24 +1054,31 @@ class ExecutionManager:
         target_qty = round(target_qty, 3)
         feature_qty = round(feature_qty, 3)
         
+        import uuid
+        order_id = str(uuid.uuid4())
         self.bus.publish('OUTBOUND_INTENT', {
             'action': 'PLACE_ORDER',
-            'order_id': str(uuid.uuid4()),
+            'order_id': order_id,
+            'clientOrderId': order_id,
             'symbol': self.target,
             'side': target_side,
             'type': 'MARKET',
             'qty': target_qty,
+            'quantity': target_qty,
             'price': 0.0,
             'position_id': self.current_position_id
         })
         
+        order_id_f = str(uuid.uuid4())
         self.bus.publish('OUTBOUND_INTENT', {
             'action': 'PLACE_ORDER',
-            'order_id': str(uuid.uuid4()),
+            'order_id': order_id_f,
+            'clientOrderId': order_id_f,
             'symbol': self.feature,
             'side': feature_side,
             'type': 'MARKET',
             'qty': feature_qty,
+            'quantity': feature_qty,
             'price': 0.0,
             'position_id': self.current_position_id
         })
@@ -1068,7 +1103,23 @@ class ExecutionManager:
 
     def _on_order_update(self, payload: dict):
         status = payload.get('status')
+        symbol = payload.get('symbol', 'UNKNOWN')
+        side = payload.get('side', 'UNKNOWN')
+        order_id = payload.get('order_id') or payload.get('clientOrderId') or 'UNKNOWN'
+        qty = float(payload.get('qty') or payload.get('quantity') or payload.get('origQty') or payload.get('filled_qty') or 0.0)
+        
+        if status == 'NEW':
+            self.bus.publish('LOG', {'level': 'INFO', 'message': f'Order Initiated: {side} {qty} {symbol} [OrderID: {order_id}]'})
+        elif status == 'PARTIALLY_FILLED':
+            filled = float(payload.get('filled_qty') or payload.get('executedQty') or 0.0)
+            self.bus.publish('LOG', {'level': 'INFO', 'message': f'Order Updated (Partial Fill): {side} {filled}/{qty} {symbol} [OrderID: {order_id}]'})
+        elif status in ['CANCELED', 'REJECTED', 'EXPIRED']:
+            self.bus.publish('LOG', {'level': 'ERROR', 'message': f'Order {status}: {side} {qty} {symbol} [OrderID: {order_id}]'})
+
         if status == 'FILLED':
+            price = float(payload.get('price') or payload.get('avg_price') or 0.0)
+            self.bus.publish('LOG', {'level': 'INFO', 'message': f'Order Executed (Filled): {side} {qty} {symbol} @ {price} [OrderID: {order_id}]'})
+
             if self.state == 'HEDGED' and self.position_entry_ts == 0:
                 self.position_entry_ts = float(payload.get('transaction_time', payload.get('transactionTime', payload.get('timestamp', 0))))
 
@@ -1244,6 +1295,7 @@ class TradingEngine:
                 'adf_pvalue': self.latest_regime.get('adf_pvalue')
             },
             'toxicity_flag': self.signal_generator.is_toxic,
+            'toxic_reason': getattr(self.signal_generator, 'toxic_reason', 'None'),
             'strategy_params': {
                 'sigma_threshold': getattr(self.signal_generator, 'entry_threshold', 2.0),
                 'min_entry_spread_bps': getattr(self.signal_generator, 'min_entry_spread_bps', 0.0),
@@ -1297,9 +1349,33 @@ def configure_strategy(target: str, feature: str):
 def clear_data():
     engine_instance.clear_data()
 
+def with_interceptors(func):
+    def wrapper(*args, **kwargs):
+        intents = []
+        logs = []
+        def on_intent(intent): intents.append(intent)
+        def on_log(log): logs.append(log)
+        engine_instance.bus.subscribe('OUTBOUND_INTENT', on_intent)
+        engine_instance.bus.subscribe('LOG', on_log)
+        
+        try:
+            func(*args, **kwargs)
+        finally:
+            if 'OUTBOUND_INTENT' in engine_instance.bus.subscribers:
+                if on_intent in engine_instance.bus.subscribers['OUTBOUND_INTENT']:
+                    engine_instance.bus.subscribers['OUTBOUND_INTENT'].remove(on_intent)
+            if 'LOG' in engine_instance.bus.subscribers:
+                if on_log in engine_instance.bus.subscribers['LOG']:
+                    engine_instance.bus.subscribers['LOG'].remove(on_log)
+        
+        return {'intents': intents, 'logs': logs}
+    return wrapper
+
+@with_interceptors
 def execute_trade(side, bps):
     engine_instance.execute_trade(side, bps)
 
+@with_interceptors
 def set_auto_trade(enabled):
     engine_instance.set_auto_trade(enabled)
 

@@ -6,9 +6,10 @@ import { hasSavedCredentials, loadCredentials, saveCredentials, setRuntimeCreden
 interface SecuritySetupModalProps {
   onSuccess: () => void;
   onSkip?: () => void;
+  env: 'TESTNET' | 'MAINNET';
 }
 
-export function SecuritySetupModal({ onSuccess, onSkip }: SecuritySetupModalProps) {
+export function SecuritySetupModal({ onSuccess, onSkip, env }: SecuritySetupModalProps) {
   const [isSettingUp, setIsSettingUp] = useState(false);
   const [kek, setKek] = useState('');
   const [apiKey, setApiKey] = useState('');
@@ -19,13 +20,15 @@ export function SecuritySetupModal({ onSuccess, onSkip }: SecuritySetupModalProp
   useEffect(() => {
     // Check if we already have saved credentials when component mounts
     const timeout = setTimeout(() => {
-      if (!hasSavedCredentials()) {
+      if (!hasSavedCredentials(env)) {
         setIsSettingUp(true);
+      } else {
+        setIsSettingUp(false);
       }
       setLoading(false);
     }, 0);
     return () => clearTimeout(timeout);
-  }, []);
+  }, [env]);
 
   const handleSetup = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -37,8 +40,8 @@ export function SecuritySetupModal({ onSuccess, onSkip }: SecuritySetupModalProp
     }
 
     try {
-      const creds = { apiKey, apiSecret };
-      await saveCredentials(kek, creds);
+      const creds = { apiKey, apiSecret, env };
+      await saveCredentials(kek, creds, env);
       setRuntimeCredentials(creds);
       onSuccess();
     } catch (err) {
@@ -56,7 +59,7 @@ export function SecuritySetupModal({ onSuccess, onSkip }: SecuritySetupModalProp
     }
 
     try {
-      const creds = await loadCredentials(kek);
+      const creds = await loadCredentials(kek, env);
       if (!creds) {
         setError('Incorrect password or corrupted data. If you lost your password, you will need to clear storage.');
         return;
@@ -70,8 +73,8 @@ export function SecuritySetupModal({ onSuccess, onSkip }: SecuritySetupModalProp
   };
 
   const handleReset = () => {
-    if (confirm('This will delete your saved encrypted keys from this browser. You will need to re-enter them. Continue?')) {
-      localStorage.removeItem('PulseQuant_encrypted_credentials');
+    if (confirm(`This will delete your saved encrypted keys for ${env} from this browser. You will need to re-enter them. Continue?`)) {
+      localStorage.removeItem(`PulseQuant_encrypted_credentials_${env}`);
       setIsSettingUp(true);
       setError('');
       setKek('');

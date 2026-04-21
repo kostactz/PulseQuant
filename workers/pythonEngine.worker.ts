@@ -344,7 +344,12 @@ configure_strategy("${safeTarget}", "${safeFeature}")
         const side = validateSide(e.data.side);
         const bps = e.data.bps === undefined || e.data.bps === null ? 0 : validateBps(e.data.bps);
         const results = callPyodideFunction('execute_trade', side, bps);
-        if (results && typeof results.destroy === 'function') results.destroy();
+        if (results) {
+          const jsResults = results.toJs({ dict_converter: Object.fromEntries });
+          if (jsResults.logs && jsResults.logs.length > 0) postMessage({ type: 'LOGS', data: jsResults.logs });
+          if (jsResults.intents && jsResults.intents.length > 0) postMessage({ type: 'INTENTS', data: jsResults.intents });
+          if (typeof results.destroy === 'function') results.destroy();
+        }
         postMessage({ type: 'TRADE_EXECUTED' });
       } catch (err) {
         console.error('[Worker] Trade error:', err);
@@ -358,7 +363,12 @@ configure_strategy("${safeTarget}", "${safeFeature}")
       try {
         const enabled = validateBoolean(e.data.enabled);
         const results = callPyodideFunction('set_auto_trade', enabled);
-        if (results && typeof results.destroy === 'function') results.destroy();
+        if (results) {
+          const jsResults = results.toJs({ dict_converter: Object.fromEntries });
+          if (jsResults.logs && jsResults.logs.length > 0) postMessage({ type: 'LOGS', data: jsResults.logs });
+          if (jsResults.intents && jsResults.intents.length > 0) postMessage({ type: 'INTENTS', data: jsResults.intents });
+          if (typeof results.destroy === 'function') results.destroy();
+        }
         postMessage({ type: 'AUTO_TRADE_UPDATED', enabled });
       } catch (err) {
         console.error('[Worker] Auto trade error:', err);
