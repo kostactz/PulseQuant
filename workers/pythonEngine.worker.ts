@@ -315,9 +315,10 @@ self.onmessage = async (e: MessageEvent) => {
       try {
         const safeTarget = String(e.data.payload.target).replace(/[^A-Za-z0-9]/g, '').toUpperCase();
         const safeFeature = String(e.data.payload.feature).replace(/[^A-Za-z0-9]/g, '').toUpperCase();
-        await pyodide.runPythonAsync(`
+        const results = await pyodide.runPythonAsync(`
 configure_strategy("${safeTarget}", "${safeFeature}")
         `);
+        if (results && typeof results.destroy === 'function') results.destroy();
         latestMetrics = null;
         postMessage({ type: 'STRATEGY_CONFIGURED', target: safeTarget, feature: safeFeature });
       } catch (err) {
@@ -326,7 +327,8 @@ configure_strategy("${safeTarget}", "${safeFeature}")
       }
     } else if (e.data.type === 'CLEAR') {
       try {
-        pyodide.runPython('clear_data()');
+        const results = pyodide.runPython('clear_data()');
+        if (results && typeof results.destroy === 'function') results.destroy();
         latestMetrics = null;
         postMessage({ type: 'CLEARED' });
       } catch (err) {
@@ -341,7 +343,8 @@ configure_strategy("${safeTarget}", "${safeFeature}")
       try {
         const side = validateSide(e.data.side);
         const bps = e.data.bps === undefined || e.data.bps === null ? 0 : validateBps(e.data.bps);
-        callPyodideFunction('execute_trade', side, bps);
+        const results = callPyodideFunction('execute_trade', side, bps);
+        if (results && typeof results.destroy === 'function') results.destroy();
         postMessage({ type: 'TRADE_EXECUTED' });
       } catch (err) {
         console.error('[Worker] Trade error:', err);
@@ -354,7 +357,8 @@ configure_strategy("${safeTarget}", "${safeFeature}")
     } else if (e.data.type === 'SET_AUTO_TRADE') {
       try {
         const enabled = validateBoolean(e.data.enabled);
-        callPyodideFunction('set_auto_trade', enabled);
+        const results = callPyodideFunction('set_auto_trade', enabled);
+        if (results && typeof results.destroy === 'function') results.destroy();
         postMessage({ type: 'AUTO_TRADE_UPDATED', enabled });
       } catch (err) {
         console.error('[Worker] Auto trade error:', err);

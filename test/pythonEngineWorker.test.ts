@@ -202,4 +202,69 @@ describe('pythonEngine.worker message flow integration', () => {
     expect(setParamsMock.destroy).toHaveBeenCalled();
     expect(pyPayloadMock.destroy).toHaveBeenCalled();
   });
+
+  it('calls run_adhoc_analysis and destroys proxies', async () => {
+    (globalThis as any).self = globalThis;
+    const postMessageMock = vi.fn();
+    (globalThis as any).postMessage = postMessageMock;
+
+    const adhocFnMock: any = vi.fn(() => ({
+      toJs: () => ({ result: 42 }),
+      destroy: vi.fn()
+    }));
+    adhocFnMock.destroy = vi.fn();
+    
+    const pyPayloadMock = { destroy: vi.fn() };
+
+    const workerModule = await import('../workers/pythonEngine.worker');
+    workerModule._testSetPandasLoaded(true);
+    workerModule._testSetPyodide({
+      globals: {
+        get: (name: string) => {
+          if (name === 'run_adhoc_analysis') return adhocFnMock;
+          throw new Error('Unmocked function: ' + name);
+        }
+      },
+      toPy: () => pyPayloadMock
+    });
+
+    await workerModule._testSendMessage({ type: 'RUN_ADHOC', payload: { data: [1, 2, 3] } });
+
+    expect(adhocFnMock).toHaveBeenCalled();
+    expect(postMessageMock).toHaveBeenCalledWith({ type: 'ADHOC_RESULT', data: { result: 42 } });
+    expect(adhocFnMock.destroy).toHaveBeenCalled();
+    expect(pyPayloadMock.destroy).toHaveBeenCalled();
+    // The results object returned by adhocFnMock() should also be destroyed
+    const results = adhocFnMock.mock.results[0].value;
+    expect(results.destroy).toHaveBeenCalled();
+  });
+
+  it('destroys proxies even if run_adhoc_analysis throws', async () => {
+    (globalThis as any).self = globalThis;
+    const postMessageMock = vi.fn();
+    (globalThis as any).postMessage = postMessageMock;
+
+    const adhocFnMock: any = vi.fn(() => { throw new Error('adhoc failure'); });
+    adhocFnMock.destroy = vi.fn();
+    
+    const pyPayloadMock = { destroy: vi.fn() };
+
+    const workerModule = await import('../workers/pythonEngine.worker');
+    workerModule._testSetPandasLoaded(true);
+    workerModule._testSetPyodide({
+      globals: {
+        get: (name: string) => {
+          if (name === 'run_adhoc_analysis') return adhocFnMock;
+          throw new Error('Unmocked function: ' + name);
+        }
+      },
+      toPy: () => pyPayloadMock
+    });
+
+    await workerModule._testSendMessage({ type: 'RUN_ADHOC', payload: { data: [1, 2, 3] } });
+
+    expect(postMessageMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'ERROR' }));
+    expect(adhocFnMock.destroy).toHaveBeenCalled();
+    expect(pyPayloadMock.destroy).toHaveBeenCalled();
+  });
 });

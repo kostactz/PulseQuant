@@ -1256,6 +1256,32 @@ class TradingEngine:
     def clear_data(self):
         self.model.reset()
 
+    def execute_trade(self, side: str, bps: float):
+        """Manual trade entry point."""
+        nav = self.portfolio.get_nav(self.model.target_price, self.model.feature_price)
+        # bps = 100 means 1%
+        notional = nav * (bps / 10000.0)
+        
+        if notional <= 0:
+            # If no nav or bps=0, use a default small notional for testing if capital exists
+            notional = self.portfolio.cash * 0.1
+            
+        if notional <= 0:
+            self.bus.publish('LOG', {'level': 'ERROR', 'message': f'Manual trade failed: no available capital (NAV: {nav:.2f})'})
+            return
+
+        direction = 'LONG_SPREAD' if side.upper() == 'BUY' else 'SHORT_SPREAD'
+        self.bus.publish('LOG', {'level': 'INFO', 'message': f'Manual trade requested: {direction} with {bps} bps ({notional:.2f} notional)'})
+        self.bus.publish('SIGNAL_GENERATED', {
+            'direction': direction,
+            'target_notional': notional,
+            'source': 'MANUAL'
+        })
+
+    def set_auto_trade(self, enabled: bool):
+        self.signal_generator.enabled = enabled
+        self.bus.publish('LOG', {'level': 'INFO', 'message': f'Auto-trade {"enabled" if enabled else "disabled"}'})
+
 # Default singleton instance for Pyodide UI compatibility
 engine_instance = TradingEngine()
 
@@ -1270,6 +1296,12 @@ def configure_strategy(target: str, feature: str):
 
 def clear_data():
     engine_instance.clear_data()
+
+def execute_trade(side, bps):
+    engine_instance.execute_trade(side, bps)
+
+def set_auto_trade(enabled):
+    engine_instance.set_auto_trade(enabled)
 
 def run_adhoc_analysis(payload: dict):
     from public.python.analytics_core import calculate_rolling_metrics
@@ -1323,18 +1355,6 @@ def run_adhoc_analysis(payload: dict):
         'std': float(std_z),
         'total_points': len(z_scores)
     }
-
-def update_strategy(style, speed):
-    # Stub for UI compliance
-    pass
-
-def set_trade_size(bps):
-    # Stub for UI compliance
-    pass
-
-def set_auto_trade(enabled):
-    # Stub for UI compliance
-    pass
 
 def set_strategy_params(payload: dict):
     engine_instance.bus.publish('UPDATE_STRATEGY_PARAMS', payload)
