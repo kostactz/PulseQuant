@@ -75,4 +75,9 @@ else
 fi
 
 echo ""
+echo "[4/4] Running Playwright E2E tests..."
+npm run test:e2e
+echo "[4/4] E2E tests PASSED."
+
+echo ""
 echo "=== Pipeline PASSED ==="

@@ -72,7 +72,8 @@ export function useMarketData(connectEnabled: boolean = true, tradingMode: Tradi
         adapterRef.current.disconnect();
       }
       
-      adapterRef.current = new BinanceAdapter(isTestnetEnv, enableUserData);
+      const useMock = typeof window !== 'undefined' && window.location.search.includes('mock=true');
+      adapterRef.current = useMock ? new MockAdapter() : new BinanceAdapter(isTestnetEnv, enableUserData);
       currentAdapterMode.current = tradingMode;
       
       if (adapterRef.current.onExecutionReport) {
