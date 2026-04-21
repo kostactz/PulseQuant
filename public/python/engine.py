@@ -1342,9 +1342,33 @@ def configure_strategy(target: str, feature: str):
 def clear_data():
     engine_instance.clear_data()
 
+def with_interceptors(func):
+    def wrapper(*args, **kwargs):
+        intents = []
+        logs = []
+        def on_intent(intent): intents.append(intent)
+        def on_log(log): logs.append(log)
+        engine_instance.bus.subscribe('OUTBOUND_INTENT', on_intent)
+        engine_instance.bus.subscribe('LOG', on_log)
+        
+        try:
+            func(*args, **kwargs)
+        finally:
+            if 'OUTBOUND_INTENT' in engine_instance.bus.subscribers:
+                if on_intent in engine_instance.bus.subscribers['OUTBOUND_INTENT']:
+                    engine_instance.bus.subscribers['OUTBOUND_INTENT'].remove(on_intent)
+            if 'LOG' in engine_instance.bus.subscribers:
+                if on_log in engine_instance.bus.subscribers['LOG']:
+                    engine_instance.bus.subscribers['LOG'].remove(on_log)
+        
+        return {'intents': intents, 'logs': logs}
+    return wrapper
+
+@with_interceptors
 def execute_trade(side, bps):
     engine_instance.execute_trade(side, bps)
 
+@with_interceptors
 def set_auto_trade(enabled):
     engine_instance.set_auto_trade(enabled)
 
