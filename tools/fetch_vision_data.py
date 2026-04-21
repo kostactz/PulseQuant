@@ -9,14 +9,20 @@ import json
 import csv
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from binance.client import Client
-
-client = Client()
 
 def fetch_binance_klines_as_ticks(symbol, start_date, end_date):
     """Fallback: Fetch 1s klines from Binance API and simulate ticks."""
+    try:
+        from binance.client import Client
+    except ImportError as exc:
+        raise ImportError(
+            "python-binance is required for the Binance API fallback path. "
+            "Install it with: pip install python-binance"
+        ) from exc
+
+    client = Client()
     print(f"Fallback: Fetching 1s klines for {symbol} via Binance API from {start_date} to {end_date}...")
-    
+
     start_ts = datetime.datetime.combine(start_date, datetime.time.min)
     end_ts = datetime.datetime.combine(end_date, datetime.time.max)
     
