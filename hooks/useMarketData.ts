@@ -152,7 +152,7 @@ export function useMarketData(connectEnabled: boolean = true, tradingMode: Tradi
                     symbol: intent.symbol,
                     side: intent.side,
                     filled_qty: intent.quantity,
-                    price: intent.price || (intent.side === 'BUY' ? latestTickRefs.current[intent.symbol]?.ask : latestTickRefs.current[intent.symbol]?.bid),
+                    price: intent.price || (intent.side === 'BUY' ? latestTick?.ask : latestTick?.bid),
                     is_maker: intent.type === 'LIMIT',
                     transaction_time: Date.now(),
                   });
