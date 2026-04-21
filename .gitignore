@@ -55,9 +55,10 @@ htmlcov/
 
 # exports
 out/
-reports/
 replay_report.json
 *.parquet
 *report.png
 test/resources/cache/*.csv
 *.jsonl
+GEM*.md
+*.out.md

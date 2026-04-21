@@ -143,4 +143,63 @@ describe('pythonEngine.worker message flow integration', () => {
 
     expect(postMessageMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'ERROR' }));
   });
+
+  it('calls set_strategy_params and destroys proxies', async () => {
+    (globalThis as any).self = globalThis;
+    const postMessageMock = vi.fn();
+    (globalThis as any).postMessage = postMessageMock;
+
+    const setParamsMock: any = vi.fn();
+    setParamsMock.destroy = vi.fn();
+    
+    const pyPayloadMock = { destroy: vi.fn() };
+
+    const workerModule = await import('../workers/pythonEngine.worker');
+    workerModule._testSetPandasLoaded(true);
+    workerModule._testSetPyodide({
+      globals: {
+        get: (name: string) => {
+          if (name === 'set_strategy_params') return setParamsMock;
+          throw new Error('Unmocked function: ' + name);
+        }
+      },
+      toPy: () => pyPayloadMock
+    });
+
+    await workerModule._testSendMessage({ type: 'SET_STRATEGY_PARAMS', payload: { foo: 'bar' } });
+
+    expect(setParamsMock).toHaveBeenCalled();
+    expect(postMessageMock).toHaveBeenCalledWith({ type: 'STRATEGY_PARAMS_UPDATED' });
+    expect(setParamsMock.destroy).toHaveBeenCalled();
+    expect(pyPayloadMock.destroy).toHaveBeenCalled();
+  });
+
+  it('destroys proxies even if set_strategy_params throws', async () => {
+    (globalThis as any).self = globalThis;
+    const postMessageMock = vi.fn();
+    (globalThis as any).postMessage = postMessageMock;
+
+    const setParamsMock: any = vi.fn(() => { throw new Error('failure'); });
+    setParamsMock.destroy = vi.fn();
+    
+    const pyPayloadMock = { destroy: vi.fn() };
+
+    const workerModule = await import('../workers/pythonEngine.worker');
+    workerModule._testSetPandasLoaded(true);
+    workerModule._testSetPyodide({
+      globals: {
+        get: (name: string) => {
+          if (name === 'set_strategy_params') return setParamsMock;
+          throw new Error('Unmocked function: ' + name);
+        }
+      },
+      toPy: () => pyPayloadMock
+    });
+
+    await workerModule._testSendMessage({ type: 'SET_STRATEGY_PARAMS', payload: { foo: 'bar' } });
+
+    expect(postMessageMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'ERROR' }));
+    expect(setParamsMock.destroy).toHaveBeenCalled();
+    expect(pyPayloadMock.destroy).toHaveBeenCalled();
+  });
 });

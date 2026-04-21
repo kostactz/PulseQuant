@@ -361,33 +361,39 @@ configure_strategy("${safeTarget}", "${safeFeature}")
         postMessage({ type: 'ERROR', error: String(err) });
       }
     } else if (e.data.type === 'RUN_ADHOC') {
+      let adhocFn: any = null;
+      let pyPayload: any = null;
+      let results: any = null;
       try {
-        const adhocFn = pyodide.globals.get('run_adhoc_analysis');
-        let pyPayload = pyodide.toPy(e.data.payload);
-        const results = adhocFn(pyPayload);
+        adhocFn = pyodide.globals.get('run_adhoc_analysis');
+        pyPayload = pyodide.toPy(e.data.payload);
+        results = adhocFn(pyPayload);
         let jsResults = results;
         if (results && typeof results.toJs === 'function') jsResults = results.toJs({ dict_converter: Object.fromEntries });
         
         postMessage({ type: 'ADHOC_RESULT', data: jsResults });
-        
-        if (results && typeof results.destroy === 'function') results.destroy();
-        if (pyPayload && typeof pyPayload.destroy === 'function') pyPayload.destroy();
-        if (adhocFn && typeof adhocFn.destroy === 'function') adhocFn.destroy();
       } catch (err) {
         console.error('[Worker] Adhoc error:', err);
         postMessage({ type: 'ERROR', error: String(err) });
+      } finally {
+        if (results && typeof results.destroy === 'function') results.destroy();
+        if (pyPayload && typeof pyPayload.destroy === 'function') pyPayload.destroy();
+        if (adhocFn && typeof adhocFn.destroy === 'function') adhocFn.destroy();
       }
     } else if (e.data.type === 'SET_STRATEGY_PARAMS') {
+      let setParamsFn: any = null;
+      let pyPayload: any = null;
       try {
-        const setParamsFn = pyodide.globals.get('set_strategy_params');
-        let pyPayload = pyodide.toPy(e.data.payload);
+        setParamsFn = pyodide.globals.get('set_strategy_params');
+        pyPayload = pyodide.toPy(e.data.payload);
         setParamsFn(pyPayload);
         postMessage({ type: 'STRATEGY_PARAMS_UPDATED' });
-        if (pyPayload && typeof pyPayload.destroy === 'function') pyPayload.destroy();
-        if (setParamsFn && typeof setParamsFn.destroy === 'function') setParamsFn.destroy();
       } catch (err) {
         console.error('[Worker] Set strategy params error:', err);
         postMessage({ type: 'ERROR', error: String(err) });
+      } finally {
+        if (pyPayload && typeof pyPayload.destroy === 'function') pyPayload.destroy();
+        if (setParamsFn && typeof setParamsFn.destroy === 'function') setParamsFn.destroy();
       }
     }
   } catch (outerErr) {
