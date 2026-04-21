@@ -1,30 +1,32 @@
-""" Standalone Backtesting Replay Tool for PulseQuant Engine
-
-This script is a command-line tool to replay market capture data through the
-PulseQuant Python engine (`public/python/engine.py`) for backtesting and performance
-analysis.
+""" Standalone Backtesting Replay Tool for Phase 4 Stat Arb Trading Engine
 
 Usage:
-  python tools/replay.py --input path/to/capture.jsonl [--engine path/to/engine.py] \
-      [--style moderate|conservative|aggressive] [--speed slow|normal|fast] \
-      [--bps 100] [--warmup-ticks 500] [--chunk-size 1000] [--report-out report.json]
+  python tools/replay.py --input test/resources/captures/mock_dual_asset.jsonl
+  python tools/replay.py --input captures/ORDIUSDC_SUIUSDC_vision_2024-01-01_2024-01-01.jsonl \\
+      --target ORDIUSDC --feature SUIUSDC --slippage-bps 10
 
-Example:
-  python tools/replay.py -i test/resources/captures/capture_btcusdt_1774646116930.jsonl \
-      --style aggressive --speed fast --bps 200 --warmup-ticks 1000 \
-      --report-out /tmp/replay_report.json
+Slippage model (conservative heuristic — REALISTIC_ENGINE.md §Phase 1):
+  - MARKET orders: executed at mid ± slippage_bps (taker, is_maker=False).
+  - LIMIT  orders: queued; filled only when a later tick *trades through* the
+    limit price (ask < buy_limit OR bid > sell_limit, strict inequality).
+    Filled at the limit price (maker, is_maker=True).
 
-This is intended to run offline from the repo root and print a final snapshot
-summary as well as optionally writing a JSON report.
+All EXECUTION_REPORTs include both transaction_time (ms) and transactionTime (ms)
+so the engine can accept either field name.
+
+Funding-rate events in the JSONL are forwarded directly to the engine so that
+PortfolioManager._on_funding_rate_update can deduct/add funding payments.
 """
 
 import argparse
 import json
 import gzip
-import importlib.util
 import os
 import sys
 import time
+import math
+import importlib.util
+
 
 def load_rows(path):
     print(f"Loading data from {path}...")
@@ -34,296 +36,430 @@ def load_rows(path):
         for line in f:
             if line.strip():
                 rows.append(json.loads(line))
-    print(f"Loaded {len(rows)} ticks.")
+    print(f"Loaded {len(rows)} events.")
     return rows
 
+
 def import_engine(path='public/python/engine.py'):
-    # Ensure numpy is available
-    try:
-        import numpy
-    except ImportError:
-        print("Error: numpy is required. Install via: pip install numpy")
-        sys.exit(1)
-        
     full_path = os.path.abspath(path)
     if not os.path.exists(full_path):
         print(f"Error: Engine not found at {full_path}")
         sys.exit(1)
-        
+
     spec = importlib.util.spec_from_file_location('engine', full_path)
-    mod = importlib.util.module_from_spec(spec)
-    # Put module in sys.modules
+    if spec is None or spec.loader is None:
+        print(f"Error: Could not load engine from {full_path}")
+        sys.exit(1)
+
+    mod = importlib.util.module_from_spec(spec)  # type: ignore
     sys.modules['engine'] = mod
-    spec.loader.exec_module(mod)
+    spec.loader.exec_module(mod)  # type: ignore
     return mod
 
 
-def simulate_fills(engine, batch, pending_orders):
-    for event in batch:
-        if event.get('type') == 'TICK':
-            row = event.get('data', {})
-            row_ts = row.get('timestamp', int(time.time() * 1000))
-            filled_ids = []
-            
-            for client_order_id, order in pending_orders.items():
-                side = order['side']
-                price = order['price']
-                qty = order['qty']
-                
-                filled = False
-                if side == 'BUY':
-                    if not price or price == 0 or price >= row.get('ask', 0.0):
-                        filled = True
-                elif side == 'SELL':
-                    if not price or price == 0 or price <= row.get('bid', 0.0):
-                        filled = True
-                        
-                if filled:
-                    fill_price = price if price and price > 0 else (row.get('ask', 0.0) if side == 'BUY' else row.get('bid', 0.0))
-                    engine.process_events([{'type': 'EXECUTION_REPORT', 'data': {
-                        'clientOrderId': client_order_id,
-                        'status': 'FILLED',
-                        'lastFilledQuantity': qty,
-                        'lastFilledPrice': fill_price,
-                        'transactionTime': row_ts
-                    }}])
-                    filled_ids.append(client_order_id)
-                    
-            for cid in filled_ids:
-                del pending_orders[cid]
 
-def process_intents_and_simulate_fills(engine, intents, row_ts, row, pending_orders):
+def _should_print_verbose_log(log):
+    message = str(log.get('message', '')).strip()
+    if not message:
+        return False
+
+    important_phrases = [
+        'Order FILLED',
+        'signaled',
+        'Entering LONG_SPREAD',
+        'Entering SHORT_SPREAD',
+        'Exiting',
+        'CIRCUIT BREAKER TRIPPED',
+        'Time-stop triggered',
+    ]
+
+    for phrase in important_phrases:
+        if phrase in message:
+            return True
+    return False
+
+
+def _dispatch_to_engine(engine, events, verbose=False, ts=None):
+    result = engine.process_events(events)
+    if result and result.get('logs') and verbose:
+        for log in result['logs']:
+            if not _should_print_verbose_log(log):
+                continue
+            t_str = f"[{ts}] " if ts else ""
+            print(f"{t_str}{log.get('level', 'INFO')}: {log.get('message')}")
+    return result
+
+def _make_fill_report(order_id, symbol, side, qty, price, is_maker, ts, position_id=None):
+    """Build an EXECUTION_REPORT data dict.  Both timestamp aliases are present."""
+    return {
+        'order_id': order_id,
+        'status': 'FILLED',
+        'symbol': symbol,
+        'side': side,
+        'filled_qty': qty,
+        'price': price,
+        'is_maker': is_maker,
+        'transaction_time': ts,
+        'transactionTime': ts,
+        'position_id': position_id,
+    }
+
+
+def process_intents(engine, intents, pending_limit_orders, row_ts,
+                    last_tick, slippage_bps, verbose=False):
+    """Process outbound intents from the engine.
+
+    - MARKET orders → immediate fill with slippage applied to mid.
+    - LIMIT  orders → queued for trade-through detection on later ticks.
+    - CANCEL  orders → remove from pending queue + send CANCELED report.
+    """
     for intent in intents:
         action = intent.get('action')
-        client_order_id = intent.get('clientOrderId') or intent.get('client_order_id')
-        if not client_order_id:
-            continue
+        order_id = intent.get('order_id')
 
         if action == 'PLACE_ORDER':
-            qty = float(intent.get('quantity', 0) or 0)
-            price = intent.get('price')
+            order_type = intent.get('type', 'LIMIT').upper()
+            qty = float(intent.get('qty', 0))
+            price = float(intent.get('price', 0))
             side = intent.get('side', '').upper()
+            symbol = intent.get('symbol', '').upper()
+            position_id = intent.get('position_id')
 
-            engine.process_events([{'type': 'EXECUTION_REPORT', 'data': {
-                'clientOrderId': client_order_id,
+            # Acknowledge order creation
+            _dispatch_to_engine(engine, [{'type': 'EXECUTION_REPORT', 'data': {
+                'order_id': order_id,
                 'status': 'NEW',
-                'lastFilledQuantity': 0,
-                'lastFilledPrice': price or 0,
-                'transactionTime': row_ts
-            }}])
+                'symbol': symbol,
+                'side': side,
+                'filled_qty': 0,
+                'price': price,
+                'transaction_time': row_ts,
+                'transactionTime': row_ts,
+            }}], verbose=verbose, ts=row_ts)
 
-            if qty > 0:
-                pending_orders[client_order_id] = {'qty': qty, 'price': price, 'side': side}
+            if order_type == 'MARKET':
+                # Compute mid from the most recent tick for this symbol (or
+                # the global last tick if no symbol-specific data is available).
+                tick_data = last_tick.get(symbol) or last_tick.get('__any__')
+                if tick_data:
+                    mid = (float(tick_data['bid']) + float(tick_data['ask'])) / 2.0
+                else:
+                    # Fall back to the intent price if we have no tick context
+                    mid = price if price > 0 else 0.0
+
+                slip = slippage_bps / 10000.0
+                if side == 'BUY':
+                    exec_price = round(mid * (1.0 + slip), 8)
+                else:
+                    exec_price = round(mid * (1.0 - slip), 8)
+
+                _dispatch_to_engine(engine, [{'type': 'EXECUTION_REPORT', 'data':
+                    _make_fill_report(order_id, symbol, side, qty,
+                                      exec_price, False, row_ts, position_id)}], verbose=verbose, ts=row_ts)
+
+            else:  # LIMIT order → queue for trade-through
+                pending_limit_orders.append({
+                    'order_id': order_id,
+                    'symbol': symbol,
+                    'side': side,
+                    'qty': qty,
+                    'price': price,
+                    'ts': row_ts,
+                    'position_id': position_id,
+                })
 
         elif action == 'CANCEL_ORDER':
-            if client_order_id in pending_orders:
-                del pending_orders[client_order_id]
-
-            cancel_report = {
-                'clientOrderId': client_order_id,
+            # Remove from pending queue (determinate, no partial cancels)
+            pending_limit_orders[:] = [
+                o for o in pending_limit_orders if o['order_id'] != order_id
+            ]
+            _dispatch_to_engine(engine, [{'type': 'EXECUTION_REPORT', 'data': {
+                'order_id': order_id,
                 'status': 'CANCELED',
-                'lastFilledQuantity': 0,
-                'lastFilledPrice': 0,
-                'transactionTime': row_ts
-            }
-            cancel_reason = intent.get('reason')
-            if cancel_reason:
-                cancel_report['cancelReason'] = cancel_reason
-            engine.process_events([{'type': 'EXECUTION_REPORT', 'data': cancel_report}])
+                'symbol': intent.get('symbol', ''),
+                'side': intent.get('side', ''),
+                'filled_qty': 0,
+                'price': 0,
+                'transaction_time': row_ts,
+                'transactionTime': row_ts,
+            }}], verbose=verbose, ts=row_ts)
 
 
-def run_capture(engine, rows, style, speed, bps, warmup_ticks, chunk_size=1000, execution_mode='exchange'):
-    print(f"Initializing engine (Style: {style}, Speed: {speed}, BPS: {bps}, Mode: {execution_mode})")
-    engine.clear_data()
-    engine.update_strategy(style, speed)
-    engine.set_trade_size(bps)
-    if execution_mode == 'immediate':
-        if hasattr(engine, 'set_immediate_execution'):
-            engine.set_immediate_execution(True)
-        elif hasattr(engine, 'session') and hasattr(engine.session, 'immediate_execution'):
-            engine.session.immediate_execution = True
-    else:
-        if hasattr(engine, 'set_immediate_execution'):
-            engine.set_immediate_execution(False)
-        elif hasattr(engine, 'session') and hasattr(engine.session, 'immediate_execution'):
-            engine.session.immediate_execution = False
-    
-    total_rows = len(rows)
-    print(f"Starting replay. Warmup ticks: {warmup_ticks}")
-    
-    start_time = time.time()
-    
-    engine.set_auto_trade(False)
-    
-    pending_orders = {}
-    
-    def process_tick_batch(batch):
-        if not batch:
-            return None
+def _check_limit_fills(engine, pending_limit_orders, tick_data, tick_ts, last_tick, slippage_bps, verbose=False):
+    """Check all pending limit orders against the latest tick for trade-through.
 
-        # Check fills before running the engine
-        if execution_mode == 'exchange' and pending_orders:
-            simulate_fills(engine, batch, pending_orders)
+    Trade-through rules (conservative, no look-ahead, full-fill only):
+      BUY  limit fills when best_ask_price STRICTLY < limit_price
+      SELL limit fills when best_bid_price STRICTLY > limit_price
+    Fills use the limit price (maker fill) and is_maker=True.
+    """
+    if not tick_data:
+        return
 
-        result = engine.process_events(batch)
+    best_bid = float(tick_data.get('bid', 0.0))
+    best_ask = float(tick_data.get('ask', float('inf')))
+    symbol = tick_data.get('symbol', '').upper()
+
+    filled = []
+    for o in pending_limit_orders:
+        if o['symbol'] != symbol:
+            continue
+        if o['side'] == 'BUY' and best_ask < o['price']:
+            filled.append(o)
+        elif o['side'] == 'SELL' and best_bid > o['price']:
+            filled.append(o)
+
+    for o in filled:
+        result = _dispatch_to_engine(engine, [{'type': 'EXECUTION_REPORT', 'data':
+            _make_fill_report(o['order_id'], o['symbol'], o['side'],
+                              o['qty'], o['price'], True, tick_ts, o.get('position_id'))}], verbose=verbose, ts=tick_ts)
         if result and result.get('intents'):
-            last_event = batch[-1]
-            row = last_event.get('data', last_event) if isinstance(last_event, dict) else last_event
-            row_ts = row.get('timestamp', int(time.time() * 1000))
-            if execution_mode == 'exchange':
-                process_intents_and_simulate_fills(engine, result['intents'], row_ts, row, pending_orders)
-        return result
+            process_intents(engine, result['intents'], pending_limit_orders, tick_ts, last_tick, slippage_bps, verbose=verbose)
+        pending_limit_orders.remove(o)
 
-    for i in range(0, total_rows, chunk_size):
-        chunk = rows[i:i+chunk_size]
-        
-        # Determine if we cross the warmup boundary in this chunk
-        if not engine.session.auto_trade:
-            # Check if this chunk will surpass warmup
-            if i + len(chunk) > warmup_ticks:
-                # We need to process up to warmup_ticks with auto_trade=False
-                # Then set it to True and process the rest
-                split_idx = warmup_ticks - i
-                if split_idx > 0:
-                    process_tick_batch([{'type': 'TICK', 'data': r} for r in chunk[:split_idx]])
-                
-                print(f"Warmup complete at tick {warmup_ticks}. Enabling auto-trade...")
-                engine.set_auto_trade(True)
-                
-                if split_idx < len(chunk):
-                    process_tick_batch([{'type': 'TICK', 'data': r} for r in chunk[split_idx:]])
-            else:
-                process_tick_batch([{'type': 'TICK', 'data': r} for r in chunk])
+
+def run_capture(engine, rows, slippage_bps=10, chunk_size=500, verbose=False):
+    print(f"Starting replay (slippage={slippage_bps} bps)...")
+    start_time = time.time()
+
+    pending_limit_orders = []
+    # last_tick[symbol] = most recent tick data dict for that symbol
+    last_tick: dict = {}
+
+    total_rows = len(rows)
+    
+    nav_history = []
+    first_ts = None
+    last_sample_ts = 0
+    sample_interval_ms = 3600 * 1000  # 1 hour
+
+    for i, row in enumerate(rows):
+        ev_type = row.get('type')
+        data = row.get('data', row)
+
+        if ev_type == 'TICK':
+            symbol = data.get('symbol', '').upper()
+            tick_ts = data.get('timestamp', int(time.time() * 1000))
+
+            # Update zero-order hold for this symbol
+            last_tick[symbol] = data
+            last_tick['__any__'] = data  # fallback for symbol-agnostic lookups
+            
+            if first_ts is None:
+                first_ts = tick_ts
+                nav_history.append(engine.get_ui_delta()['portfolio_value'])
+                last_sample_ts = tick_ts
+            elif tick_ts - last_sample_ts >= sample_interval_ms:
+                nav_history.append(engine.get_ui_delta()['portfolio_value'])
+                last_sample_ts = tick_ts
+
+            # Feed tick to engine, collect any new intents
+            result = _dispatch_to_engine(engine, [row], verbose=verbose, ts=row.get('data', row).get('timestamp'))
+            if result and result.get('intents'):
+                process_intents(engine, result['intents'], pending_limit_orders,
+                                tick_ts, last_tick, slippage_bps, verbose=verbose)
+
+            # Check limit order trade-through on every new tick
+            _check_limit_fills(engine, pending_limit_orders, data, tick_ts, last_tick, slippage_bps, verbose=verbose)
+
+        elif ev_type == 'FUNDING_RATE_UPDATE':
+            # Route funding events directly — engine handles accounting
+            _dispatch_to_engine(engine, [row], verbose=verbose)
+
         else:
-            process_tick_batch([{'type': 'TICK', 'data': r} for r in chunk])
+            # Forward any other event type (REGIME_DATA etc.) as-is
+            _dispatch_to_engine(engine, [row], verbose=verbose)
 
-        # Progress indication
-        if (i + chunk_size) % max(1, (total_rows // 10)) < chunk_size:
-            progress = min(100, int((i + chunk_size) / total_rows * 100))
-            print(f"Progress: {progress}% ({i + chunk_size}/{total_rows})")
+        # Progress reporting
+        if total_rows > 0 and (i + 1) % max(1, total_rows // 10) == 0:
+            progress = int((i + 1) / total_rows * 100)
+            print(f"Progress: {progress}% ({i + 1}/{total_rows})")
 
     elapsed = time.time() - start_time
-    print(f"Replay finished in {elapsed:.2f} seconds ({total_rows / elapsed:.0f} ticks/sec).")
-    
-    # Get final snapshot metrics (engine.process_events([]) only returns logs/intents)
-    if hasattr(engine, 'get_metrics'):
-        return engine.get_metrics()
-    
-    # Fallback for alternative/old engines
-    if hasattr(engine, 'process_data'):
-        return engine.process_data([])
-        
-    if hasattr(engine, 'session'):
-        # Derive metrics from engine.session
-        current_capital = getattr(engine.session.portfolio, 'capital', 0.0)
-        # Use value_hist for portfolio_value (capital + open position mark-to-market);
-        # fall back to capital alone when history is unavailable.
-        value_hist = getattr(engine.session, 'value_hist', None)
-        approx_portfolio_value = value_hist[-1] if value_hist and len(value_hist) > 0 else current_capital
-        return {
-            'portfolio_value': approx_portfolio_value,
-            'capital': current_capital,
-            'position': getattr(engine.session.portfolio, 'position', 0.0),
-            'max_dd_pct': getattr(engine.session, 'max_dd_pct', 0.0),
-            'max_dd_duration': getattr(engine.session, 'max_dd_duration', 0.0),
-            'analytics': getattr(engine.session.portfolio, 'get_trade_analytics', lambda: {
-                'total_trades': 0, 'hit_ratio': 0.0, 'profit_factor': 0.0,
-                'win_loss_ratio': 0.0, 'avg_holding_time': 0.0, 'maker_fill_rate': 0.0
-            })(),
-            'pending_order_count': len(getattr(engine.session, 'pending_orders', [])),
-            'canceled_orders_total': getattr(engine.session, 'canceled_orders_total', 0),
-            'cancellation_rate': 0.0,
-            'recent_trades_full': [],
-            'recent_cancellations': []
-        }
-    
-    # Keep the previous process_events([]) behavior as a last resort
-    return engine.process_events([])
+    tps = total_rows / elapsed if elapsed > 0 else 0
+    print(f"Replay finished in {elapsed:.2f}s ({tps:.0f} events/sec).")
 
-def print_metrics(snapshot):
-    print("\n" + "="*50)
+    return engine.get_ui_delta(), nav_history
+
+
+def print_metrics(snapshot, nav_history=None, verbose=False):
+    print("\n" + "="*55)
     print("REPLAY RESULTS")
-    print("="*50)
-    
-    print("\n--- Portfolio ---")
-    print(f"Final Value:    ${snapshot['portfolio_value']:.2f}")
-    print(f"Capital:        ${snapshot['capital']:.2f}")
-    print(f"Position:       {snapshot['position']:.4f}")
-    print(f"Max Drawdown:   -{snapshot['max_dd_pct']*100:.2f}% (Duration: {snapshot['max_dd_duration']/1000:.1f}s)")
-    
-    analytics = snapshot['analytics']
-    print("\n--- Trading Analytics ---")
-    print(f"Total Trades:   {analytics['total_trades']}")
-    print(f"Hit Ratio:      {analytics['hit_ratio']*100:.2f}%")
-    print(f"Profit Factor:  {analytics['profit_factor']:.2f}")
-    print(f"Win/Loss Ratio: {analytics['win_loss_ratio']:.2f}")
-    print(f"Avg Hold Time:  {analytics['avg_holding_time']/1000:.2f}s")
-    print(f"Maker Fill Rate:{analytics['maker_fill_rate']*100:.2f}%")
-    
-    print("\n--- Microstructure ---")
-    print(f"Pending Makers: {snapshot['pending_order_count']}")
-    print(f"Canceled Fills: {snapshot['canceled_orders_total']}")
-    print(f"Cancel Rate:    {snapshot['cancellation_rate']*100:.2f}%")
-    print("="*50)
+    print("="*55)
 
-def save_report(snapshot, path):
-    print(f"\nSaving detailed report to {path}")
+    print("\n--- Portfolio ---")
+    print(f"Final NAV:           ${snapshot['portfolio_value']:.4f}")
+    print(f"Cash:                ${snapshot['capital']:.4f}")
+    print(f"Realized PnL:        ${snapshot.get('realized_pnl', 0.0):.4f}")
+    upnl = snapshot.get('unrealized_pnl', {})
+    upnl_total = sum(upnl.values()) if isinstance(upnl, dict) else float(upnl)
+    print(f"Unrealized PnL:      ${upnl_total:.4f}")
+    print(f"Total Fees Paid:     ${snapshot.get('total_fees_paid', 0.0):.4f}")
+    print(f"Total Funding Paid:  ${snapshot.get('total_funding_paid', 0.0):.6f}")
+    print(f"Positions:           {snapshot['positions']}")
+    print(f"Net Delta:           ${snapshot['net_delta']:.4f}")
+
+    print("\n--- Strategy ---")
+    print(f"Toxicity Flag:       {snapshot['toxicity_flag']}")
+    print(f"Execution State:     {snapshot['execution_state']}")
+    print(f"Dynamic Hurdle:      {snapshot.get('dynamic_hurdle_bps', 'n/a')} bps")
+
+    metrics = snapshot.get('spread_metrics', {})
+    print("\n--- Spread Metrics ---")
+    print(f"Z-Score:             {metrics.get('z_score', 0.0):.4f}")
+    print(f"Beta:                {metrics.get('beta', 0.0):.6f}")
+    print(f"Ready:               {metrics.get('is_ready', False)}")
     
-    # We strip out large time series for the report to keep it manageable
-    report = {
-        'portfolio': {
-            'value': snapshot['portfolio_value'],
-            'capital': snapshot['capital'],
-            'position': snapshot['position'],
-            'max_dd_pct': snapshot['max_dd_pct'],
-            'max_dd_duration': snapshot['max_dd_duration']
-        },
-        'analytics': snapshot['analytics'],
-        'microstructure': {
-            'pending_orders': snapshot['pending_order_count'],
-            'canceled_orders': snapshot['canceled_orders_total'],
-            'cancellation_rate': snapshot['cancellation_rate']
-        },
-        'trades': snapshot['recent_trades_full'],
-        'cancellations': snapshot['recent_cancellations']
-    }
+    trades_volume = snapshot.get('trades_volume', 0)
+    timed_out = snapshot.get('maker_timeouts', 0)
+    total_maker_orders = snapshot.get('total_maker_orders', 0)
+    hit_ratio = 1.0 - (timed_out / total_maker_orders) if total_maker_orders > 0 else 0.0
     
-    with open(path, 'w') as f:
-        json.dump(report, f, indent=2)
+    win_trades = snapshot.get('win_trades', 0)
+    loss_trades = snapshot.get('loss_trades', 0)
+    wl_ratio = (win_trades / loss_trades) if loss_trades > 0 else (float('inf') if win_trades > 0 else 0.0)
+
+    sharpe = 0.0
+    if nav_history and len(nav_history) > 1:
+        returns = [(nav_history[i] - nav_history[i-1]) / nav_history[i-1] for i in range(1, len(nav_history))]
+        mean_r = sum(returns) / len(returns)
+        variance = sum((r - mean_r) ** 2 for r in returns) / len(returns)
+        std_r = math.sqrt(variance) if variance > 0 else 1e-8
+        # Annualized Sharpe assuming hourly sampling
+        sharpe = (mean_r / std_r) * math.sqrt(24 * 365)
+        
+    print("\n--- Trading Details ---")
+    print(f"Trades Volume:       {trades_volume} completed legs")
+    print(f"Timed-out Volume:    {timed_out} maker timeouts")
+    print(f"Hit Ratio:           {hit_ratio:.2%}")
+    print(f"Win/Loss Ratio:      {wl_ratio:.2f} ({win_trades} W / {loss_trades} L)")
+    print(f"Annualized Sharpe:   {sharpe:.2f}")
+
+    decision_counts = snapshot.get('decision_counts', {})
+    if decision_counts:
+        print("\n--- Decision Summary ---")
+        for reason, count in sorted(decision_counts.items()):
+            print(f"{reason.replace('_', ' ').title()}: {count}")
+    
+    if verbose:
+        all_trades = snapshot.get('all_historical_trades', [])
+        print("\n--- Verbose Trade History ---")
+        if not all_trades:
+            print("No trades executed.")
+        else:
+            print(f"{'Time':<15} | {'Symbol':<10} | {'Side':<5} | {'Qty':<6} | {'Price':<10} | {'Fee':<8} | {'Maker':<5} | {'PnL'}")
+            print("-" * 82)
+            import datetime
+            for t in all_trades:
+                ts_str = datetime.datetime.fromtimestamp(t['timestamp']/1000).strftime('%m-%d %H:%M:%S')
+                print(f"{ts_str:<15} | {t['symbol']:<10} | {t['side']:<5} | {t['qty']:<6} | {t['price']:<10.4f} | {t['fee']:<8.4f} | {str(t['is_maker']):<5} | {t['realized_pnl']:<8.4f}")
+    
+    print("="*55)
+
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="PulseQuant Headless Engine Replay")
-    parser.add_argument('--input', '-i', required=True, help="Path to the .jsonl or .jsonl.gz capture file")
-    parser.add_argument('--engine', '-e', default='public/python/engine.py', help="Path to engine.py")
-    parser.add_argument('--execution-mode', default='exchange', choices=['exchange', 'immediate'], help="Execution mode: exchange lifecycle or immediate execution")
-    parser.add_argument('--style', default='moderate', choices=['conservative', 'moderate', 'aggressive'], help="Trading style")
-    parser.add_argument('--speed', default='normal', choices=['slow', 'normal', 'fast'], help="Signal speed")
-    parser.add_argument('--bps', type=int, default=100, help="Trade size in basis points (bps)")
-    parser.add_argument('--warmup-ticks', type=int, default=500, help="Number of ticks to process before enabling auto-trade")
-    parser.add_argument('--chunk-size', type=int, default=1000, help="Number of ticks to process per engine call")
-    parser.add_argument('--report-out', '-o', help="Path to save detailed JSON report")
-    
+    parser = argparse.ArgumentParser(
+        description="Phase 4 Stat Arb Engine Replay — conservative slippage model",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument('--input', '-i', required=True,
+                        help="Path to the .jsonl or .jsonl.gz capture file")
+    parser.add_argument('--engine', '-e', default='public/python/engine.py',
+                        help="Path to engine.py")
+    parser.add_argument('--target', type=str, default='BTCUSDT',
+                        help="Target asset symbol")
+    parser.add_argument('--feature', type=str, default='ETHUSDT',
+                        help="Feature asset symbol")
+    parser.add_argument('--slippage-bps', type=float, default=10.0,
+                        help="Market-order slippage in basis points (default 10 bps = 0.10%%)")
+    parser.add_argument('--maker-fee', type=float, default=0.0,
+                        help="Maker fee (default 0.0 = 0 bps)")
+    parser.add_argument('--taker-fee', type=float, default=0.0005,
+                        help="Taker fee (default 0.0005 = 5 bps)")
+    parser.add_argument('--sigma-threshold', type=float, default=2.0,
+                        help="Z-score threshold for entry")
+    parser.add_argument('--min-entry-spread', type=float, default=0.0,
+                        help="Minimum spread in bps to enter a trade")
+    parser.add_argument('--min-beta', type=float, default=0.5,
+                        help="Minimum allowed beta for entry")
+    parser.add_argument('--max-beta', type=float, default=1.5,
+                        help="Maximum allowed beta for entry")
+    parser.add_argument('--kalman-delta', type=float, default=1e-5,
+                        help="Kalman filter delta (state variance)")
+    parser.add_argument('--kalman-r-var', type=float, default=1e-3,
+                        help="Kalman filter r_var (observation noise)")
+    parser.add_argument('--kelly-fraction', type=float, default=0.25,
+                        help="Maximum kelly fraction limit")
+    parser.add_argument('--time-stop', type=str, default='auto',
+                        help="Time stop configuration (auto, x2, 45m, 2.5h, 120s)")
+    parser.add_argument('--verbose', action='store_true',
+                        help="Print verbose trade history")
+
     args = parser.parse_args()
-    
+
     rows = load_rows(args.input)
     if not rows:
         print("Error: No data loaded.")
         sys.exit(1)
-        
-    engine = import_engine(args.engine)
-    
-    final_snapshot = run_capture(
-        engine,
-        rows,
-        style=args.style,
-        speed=args.speed,
-        bps=args.bps,
-        warmup_ticks=args.warmup_ticks,
-        chunk_size=args.chunk_size,
-        execution_mode=args.execution_mode
+
+    engine_module = import_engine(args.engine)
+    engine = engine_module.TradingEngine(
+        target=args.target.upper(),
+        feature=args.feature.upper(),
     )
-    
-    print_metrics(final_snapshot)
-    
-    if args.report_out:
-        save_report(final_snapshot, args.report_out)
+
+    # Persistent logger to capture all engine LOG events (including async)
+    import json as _json
+    def _persistent_replay_logger(payload):
+        if not _should_print_verbose_log(payload):
+            return
+
+        level = payload.get('level', 'INFO')
+        msg = payload.get('message', '')
+        ts = payload.get('timestamp') or ''
+        # Include event tag if present for easier grepping
+        tag = payload.get('event', '')
+        prefix = f"[{ts}] " if ts else ''
+        if tag:
+            print(f"{prefix}{level}: {tag} - {msg}")
+        else:
+            print(f"{prefix}{level}: {msg}")
+
+        # If payload contains structured fields, print them as JSON for full diagnostics
+        try:
+            # Avoid overly small dumps for trivial messages
+            extra_keys = {k: v for k, v in payload.items() if k not in ('level', 'message', 'timestamp')}
+            if extra_keys:
+                print(prefix + _json.dumps(payload, sort_keys=True))
+        except Exception:
+            # Best-effort fallback
+            print(prefix + str(payload))
+
+    # Subscribe the persistent logger only when verbose mode is enabled.
+    if args.verbose:
+        try:
+            engine.bus.subscribe('LOG', _persistent_replay_logger)
+        except Exception:
+            # Defensive: if engine bus not ready, ignore
+            pass
+
+    # Apply user-specified strategy parameters
+    engine.process_events([{
+        'type': 'UPDATE_STRATEGY_PARAMS',
+        'data': {
+            'sigma_threshold': args.sigma_threshold,
+            'min_entry_spread_bps': args.min_entry_spread,
+            'min_beta': args.min_beta,
+            'max_beta': args.max_beta,
+            'kalman_delta': args.kalman_delta,
+            'kalman_r_var': args.kalman_r_var,
+            'kelly_fraction_limit': args.kelly_fraction,
+            'time_stop': args.time_stop,
+            'maker_fee': args.maker_fee,
+            'taker_fee': args.taker_fee,
+            'slippage_bps': args.slippage_bps
+        }
+    }])
+
+    final_snapshot, nav_hist = run_capture(engine, rows, slippage_bps=args.slippage_bps, verbose=args.verbose)
+    print_metrics(final_snapshot, nav_history=nav_hist, verbose=args.verbose)

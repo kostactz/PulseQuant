@@ -1,4 +1,4 @@
-import { MarketDataAdapter, NormalizedTick } from '../types';
+import { FundingRateData, MarketDataAdapter, NormalizedTick } from '../types';
 import { generateMockTick } from '../../mockData';
 
 export class MockAdapter implements MarketDataAdapter {
@@ -35,6 +35,8 @@ export class MockAdapter implements MarketDataAdapter {
   }
 
   onExecutionReport(callback: (report: any) => void): void {}
+
+  onMarkPriceUpdate(_callback: (data: FundingRateData) => void): void {}
 
   onTick(callback: (tick: NormalizedTick) => void): void {
     this.tickCallback = callback;

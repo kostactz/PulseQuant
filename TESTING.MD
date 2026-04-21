@@ -1,8 +1,7 @@
 **Testing Guide**
 
-- Main test locations: `public/python/tests/` (Python engine) and `test/` + `e2e/` (JS/Vitest/Playwright).
-- Python tests live in `public/python/tests/*.py` and share fixtures in `public/python/tests/conftest.py`.
-- Engine tests avoid external IO; call `clear_data()` when depending on global `session` state.
+- Main test locations: `public/python/tests/` (Python engine logic) and `test/` + `e2e/` (JS/Vitest/Playwright).
+- Python tests live in `public/python/tests/*.py` and share fixtures via `public/python/tests/conftest.py`.
 
 Quick start (Python engine)
 ---------------------------
@@ -15,78 +14,67 @@ pip install --upgrade pip
 pip install pytest pytest-benchmark numpy
 ```
 
-2) Run all Python tests:
+2) Run all Python tests (from repo root):
 
 ```bash
-python3 -m pytest public/python/tests/
-# or from repo root
 npm run test:py
 ```
 
-3) Run a specific test:
+3) Run specific Stat Arb math tests:
 
 ```bash
-python3 -m pytest public/python/tests/test_unit_buffers.py::test_ringbuffer_basic -q
-python3 -m pytest public/python/tests/test_unit_buffers.py -q
-```
-
-4) Benchmark test (local only):
-
-```bash
-python3 -m pytest public/python/tests/test_performance.py -q
+python3 -m pytest public/python/tests/test_math.py -q
+python3 -m pytest public/python/tests/test_model.py -q
+python3 -m pytest public/python/tests/test_signal.py -q
 ```
 
 Writing tests
 -------------
-- Add files under `public/python/tests/` with prefix `test_`.
-- Use fixtures as args (`mock_tick_data` from `conftest.py`).
-- Keep tests small, deterministic, and self-contained.
+- Add files under `public/python/tests/` with the prefix `test_`.
+- Use fixtures as arguments (e.g., `mock_tick_data` from `conftest.py`).
+- Keep tests small, deterministic, and self-contained, specifically when validating $O(1)$ ring buffer computations or Beta resets.
 
 JS tests
 --------
-- Unit: `npm run test:unit` (Vitest).
-- E2E: `npm run test:e2e` (Playwright).
-- Full run: `npm run test` (py + unit + e2e).
+- Unit (React/Hooks): `npm run test:unit` (Vitest).
+- E2E (UI): `npm run test:e2e` (Playwright).
+- Full suite: `npm run test` (Python + Vitest + Playwright).
 
 Setup
 -----
-- Node 20.19+.
-- Install:
+- Node 20.19+ required.
+- Install dependencies:
 
 ```bash
 npm ci
 npx playwright install --with-deps
 ```
 
-- Python: use `.venv` in repo root.
-
 Debugging
 ---------
-- Verbose pytest:
+- Verbose PyTest:
 
 ```bash
-python3 -m pytest public/python/tests/test_integration.py::test_cancellation_logic -s -q
+python3 -m pytest public/python/tests/test_execution.py -s -v
 ```
 
 - Filter tests:
 
 ```bash
-pytest -k ringbuffer -q
+pytest -k "bivariate" -q
 ```
 
-- CI skip benchmarks:
-
-```bash
-pytest -k "not performance" -q
-```
-
-Useful pytest options
----------------------
-- `-k`, `-q`, `-s`, `-x`, `--maxfail=1`.
-
-Replay helper
+Replay helper & Mock Data
 -------------
-- `tools/replay.py` uses JSONL captures and `public/python/engine.py`.
-- Input file format follows `NormalizedTick` shape from `lib/market-data/types.ts`.
-- Use `--report-out` for JSON output of portfolio/trades.
+- `tools/replay.py` utilizes JSONL captures to pump mock data through `public/python/engine.py` for backtesting.
+- `tools/generate_mock_data.py` builds correlated synthetic Target and Feature tick pairs. You can customize the spread volatility using the CLI.
+- Input file format adheres to the `NormalizedTick` shape found in `lib/market-data/types.ts`.
+
+Realistic Backtester Integration
+--------------------------------
+- A high-fidelity continuous integration pipeline was introduced, covering cost accounting and event routing.
+- **`test_pipeline.sh`**: The master CI bash script for the orchestration layer. By default, it runs offline Python unit tests enforcing 10bps slippage bounds and Limit queue trade-through conditions.
+  - Quick run (fast unit tests): `./test_pipeline.sh`
+  - Integration mode: `RUN_INTEGRATION=1 ./test_pipeline.sh` (Downloads >1.5M ticks natively from Binance Vision for a target date, interleaves funding streams into a `.jsonl`, and validates realistic simulated hedging).
+- **`test/test_replay_engine.py`**: A suite of `pytest` functions executing purely over the Python sub-process layer. These validate exchange-style event bus mechanisms (e.g., Maker Limits strict inequality fills, slippage precision, portfolio cash deductions on funding, and `is_maker` flags).
 

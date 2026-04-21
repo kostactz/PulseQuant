@@ -27,21 +27,26 @@ vi.mock('@/hooks/usePythonWorker', () => ({
     executeTrade: vi.fn(),
     setAutoTrade: vi.fn(),
     updateStrategy: vi.fn(),
-    setTradeSize: vi.fn()
+    setTradeSize: vi.fn(),
+    configureStrategy: vi.fn(),
+    runAdhocAnalysis: vi.fn(),
+    adhocResult: null,
+    setStrategyParams: vi.fn()
   })
 }));
 
 vi.mock('@/hooks/useMarketData', () => ({
   useMarketData: () => ({
-    latestDepth: { bids: [], asks: [] },
-    latestTick: null,
+    orderBooks: {},
+    latestTicks: {},
     getAndClearBuffer: vi.fn(),
     clearBuffer: vi.fn(),
     isPlaying: true,
     setIsPlaying: vi.fn(),
     isRecording: false,
     toggleRecording: vi.fn(),
-    executeIntent: vi.fn()
+    executeIntent: vi.fn(),
+    setSymbols: vi.fn()
   })
 }));
 

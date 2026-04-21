@@ -10,6 +10,7 @@ const nextConfig: NextConfig = {
   },
   // Allow access to remote image placeholder.
   images: {
+    unoptimized: true,
     remotePatterns: [
       {
         protocol: 'https',
@@ -19,19 +20,7 @@ const nextConfig: NextConfig = {
       },
     ],
   },
-  output: 'standalone',
-  async rewrites() {
-    return [
-      {
-        source: '/binance-api/testnet/:path*',
-        destination: 'https://testnet.binancefuture.com/:path*',
-      },
-      {
-        source: '/binance-api/mainnet/:path*',
-        destination: 'https://fapi.binance.com/:path*',
-      },
-    ];
-  },
+  output: 'export',
   transpilePackages: ['motion'],
   webpack: (config, {dev, isServer}) => {
     if (!isServer) {

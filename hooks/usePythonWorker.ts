@@ -8,6 +8,7 @@ export function usePythonWorker(onIntent?: (intent: any) => void) {
   const [isReady, setIsReady] = useState(false);
   const [metrics, setMetrics] = useState<any>(null);
   const [uiDelta, setUiDelta] = useState<any>(null);
+  const [adhocResult, setAdhocResult] = useState<any>(null);
   const metricsRef = useRef<any>(null);
 
   useEffect(() => {
@@ -57,7 +58,6 @@ export function usePythonWorker(onIntent?: (intent: any) => void) {
         }
 
         if (event.data.type === 'ERROR') {
-          setIsReady(false);
           logger.error('Python Engine error: ' + (event.data.error || 'unknown'));
           // Attempt restart with backoff
           if (restartAttemptsRef.current < maxRestartAttempts) {
@@ -88,6 +88,16 @@ export function usePythonWorker(onIntent?: (intent: any) => void) {
 
         if (event.data.type === 'UI_DELTA') {
           setUiDelta(event.data.data);
+          return;
+        }
+        
+        if (event.data.type === 'ADHOC_RESULT') {
+          if (event.data.data && event.data.data.error) {
+            logger.error(`Adhoc Analysis Error: ${event.data.data.error}`);
+            setAdhocResult({ error: event.data.data.error });
+          } else {
+            setAdhocResult(event.data.data);
+          }
           return;
         }
 
@@ -182,17 +192,26 @@ export function usePythonWorker(onIntent?: (intent: any) => void) {
     }
   }, [isReady]);
 
-  const updateStrategy = useCallback((style: string, speed: string) => {
+  const configureStrategy = useCallback((target: string, feature: string) => {
     if (isReady && workerRef.current) {
-      workerRef.current.postMessage({ type: 'UPDATE_STRATEGY', style, speed });
+      workerRef.current.postMessage({ type: 'CONFIGURE_STRATEGY', payload: { target, feature } });
     }
   }, [isReady]);
 
-  const setTradeSize = useCallback((bps: number) => {
+  const runAdhocAnalysis = useCallback(async (targetData: any[], featureData: any[], windowSize: number = 800) => {
     if (isReady && workerRef.current) {
-      workerRef.current.postMessage({ type: 'SET_TRADE_SIZE', bps });
+      workerRef.current.postMessage({
+        type: 'RUN_ADHOC',
+        payload: { targetData, featureData, windowSize }
+      });
     }
   }, [isReady]);
 
-  return { isReady, metrics, uiDelta, getUIDelta, processBatch, clearData, clearCache, executeTrade, setAutoTrade, updateStrategy, setTradeSize };
+  const setStrategyParams = useCallback((params: any) => {
+    if (isReady && workerRef.current) {
+      workerRef.current.postMessage({ type: 'SET_STRATEGY_PARAMS', payload: params });
+    }
+  }, [isReady]);
+
+  return { isReady, metrics, uiDelta, getUIDelta, processBatch, clearData, clearCache, executeTrade, setAutoTrade, configureStrategy, runAdhocAnalysis, adhocResult, setStrategyParams };
 }

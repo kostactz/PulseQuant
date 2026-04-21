@@ -1,0 +1,5 @@
+pytest
+pytest-benchmark
+numpy
+pytest-cov
+pandas>=2.0,<3.0

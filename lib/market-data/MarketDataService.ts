@@ -43,6 +43,12 @@ export class MarketDataService {
     this.adapter.unsubscribe(symbol);
   }
 
+  async setSymbols(target: string, feature: string) {
+    if (this.adapter.setSymbols) {
+      await this.adapter.setSymbols(target, feature);
+    }
+  }
+
   // Allows swapping the underlying data source at runtime
   async changeAdapter(newAdapter: MarketDataAdapter) {
     await this.stop();

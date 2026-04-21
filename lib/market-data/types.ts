@@ -4,6 +4,7 @@ export interface NormalizedDepth {
 }
 
 export interface NormalizedTick {
+  symbol?: string;
   timestamp: number;
   bid: number;
   ask: number;
@@ -18,12 +19,21 @@ export interface NormalizedTick {
   asks?: [number, number][];
 }
 
+export interface FundingRateData {
+  symbol: string;
+  fundingRate: number;
+  markPrice: number;
+  timestamp: number;
+}
+
 export interface MarketDataAdapter {
   connect(): Promise<void>;
   disconnect(): Promise<void>;
   subscribe(symbol: string): void;
   unsubscribe(symbol: string): void;
+  setSymbols?(target: string, feature: string): Promise<void>;
   onTick(callback: (tick: NormalizedTick) => void): void;
   onExecutionReport?(callback: (report: any) => void): void;
   onSyncState?(callback: (state: any) => void): void;
+  onMarkPriceUpdate?(callback: (data: FundingRateData) => void): void;
 }

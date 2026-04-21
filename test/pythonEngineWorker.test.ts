@@ -18,11 +18,11 @@ afterAll(() => {
 describe('pythonEngine.worker validation helpers', () => {
   beforeAll(async () => {
     (globalThis as any).self = globalThis;
-    const module = await import('../workers/pythonEngine.worker');
-    validateSide = module.validateSide;
-    validateStyle = module.validateStyle;
-    validateSpeed = module.validateSpeed;
-    validateBps = module.validateBps;
+    const workerModule = await import('../workers/pythonEngine.worker');
+    validateSide = workerModule.validateSide;
+    validateStyle = workerModule.validateStyle;
+    validateSpeed = workerModule.validateSpeed;
+    validateBps = workerModule.validateBps;
   });
 
   afterAll(() => {
@@ -74,10 +74,10 @@ describe('pythonEngine.worker validation helpers', () => {
   });
 
   it('validates boolean values', async () => {
-    const module = await import('../workers/pythonEngine.worker');
-    expect(module.validateBoolean(true)).toBe(true);
-    expect(module.validateBoolean(false)).toBe(false);
-    expect(() => module.validateBoolean('true')).toThrow(/Invalid boolean/);
+    const workerModule = await import('../workers/pythonEngine.worker');
+    expect(workerModule.validateBoolean(true)).toBe(true);
+    expect(workerModule.validateBoolean(false)).toBe(false);
+    expect(() => workerModule.validateBoolean('true')).toThrow(/Invalid boolean/);
   });
 });
 
@@ -91,48 +91,36 @@ describe('pythonEngine.worker message flow integration', () => {
     delete (globalThis as any).self;
   });
 
-  it('processes UPDATE_STRATEGY, TRADE, SET_AUTO_TRADE, SET_TRADE_SIZE messages', async () => {
+  it('processes TRADE and SET_AUTO_TRADE messages', async () => {
     (globalThis as any).self = globalThis;
     const postMessageMock = vi.fn();
     (globalThis as any).postMessage = postMessageMock;
 
-    const executeTradeMock = vi.fn();
+    const executeTradeMock: any = vi.fn();
     executeTradeMock.destroy = vi.fn();
-    const setAutoTradeMock = vi.fn();
+    const setAutoTradeMock: any = vi.fn();
     setAutoTradeMock.destroy = vi.fn();
-    const updateStrategyMock = vi.fn();
-    updateStrategyMock.destroy = vi.fn();
-    const setTradeSizeMock = vi.fn();
-    setTradeSizeMock.destroy = vi.fn();
 
-    const module = await import('../workers/pythonEngine.worker');
-    module._testSetPandasLoaded(true);
-    module._testSetPyodide({
+    const workerModule = await import('../workers/pythonEngine.worker');
+    workerModule._testSetPandasLoaded(true);
+    workerModule._testSetPyodide({
       globals: {
         get: (name: string) => {
           if (name === 'execute_trade') return executeTradeMock;
           if (name === 'set_auto_trade') return setAutoTradeMock;
-          if (name === 'update_strategy') return updateStrategyMock;
-          if (name === 'set_trade_size') return setTradeSizeMock;
           throw new Error('Unmocked function: ' + name);
         }
       }
     });
 
-    await module._testSendMessage({ type: 'UPDATE_STRATEGY', style: 'moderate', speed: 'fast' });
-    await module._testSendMessage({ type: 'TRADE', side: 'buy', bps: 50 });
-    await module._testSendMessage({ type: 'SET_AUTO_TRADE', enabled: true });
-    await module._testSendMessage({ type: 'SET_TRADE_SIZE', bps: 200 });
+    await workerModule._testSendMessage({ type: 'TRADE', side: 'buy', bps: 50 });
+    await workerModule._testSendMessage({ type: 'SET_AUTO_TRADE', enabled: true });
 
-    expect(updateStrategyMock).toHaveBeenCalledWith('moderate', 'fast');
     expect(executeTradeMock).toHaveBeenCalledWith('buy', 50);
     expect(setAutoTradeMock).toHaveBeenCalledWith(true);
-    expect(setTradeSizeMock).toHaveBeenCalledWith(200);
 
-    expect(postMessageMock).toHaveBeenCalledWith({ type: 'STRATEGY_UPDATED', style: 'moderate', speed: 'fast' });
     expect(postMessageMock).toHaveBeenCalledWith({ type: 'TRADE_EXECUTED' });
     expect(postMessageMock).toHaveBeenCalledWith({ type: 'AUTO_TRADE_UPDATED', enabled: true });
-    expect(postMessageMock).toHaveBeenCalledWith({ type: 'TRADE_SIZE_UPDATED', bps: 200 });
   });
 
   it('returns ERROR for invalid TRADE/SET_AUTO_TRADE payloads', async () => {
@@ -140,9 +128,9 @@ describe('pythonEngine.worker message flow integration', () => {
     const postMessageMock = vi.fn();
     (globalThis as any).postMessage = postMessageMock;
 
-    const module = await import('../workers/pythonEngine.worker');
-    module._testSetPandasLoaded(true);
-    module._testSetPyodide({
+    const workerModule = await import('../workers/pythonEngine.worker');
+    workerModule._testSetPandasLoaded(true);
+    workerModule._testSetPyodide({
       globals: {
         get: () => {
           throw new Error('should not be called for invalid payload');
@@ -150,9 +138,133 @@ describe('pythonEngine.worker message flow integration', () => {
       }
     });
 
-    await module._testSendMessage({ type: 'TRADE', side: 'invalid', bps: 50 });
-    await module._testSendMessage({ type: 'SET_AUTO_TRADE', enabled: 'not-a-bool' });
+    await workerModule._testSendMessage({ type: 'TRADE', side: 'invalid', bps: 50 });
+    await workerModule._testSendMessage({ type: 'SET_AUTO_TRADE', enabled: 'not-a-bool' });
 
     expect(postMessageMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'ERROR' }));
+  });
+
+  it('calls set_strategy_params and destroys proxies', async () => {
+    (globalThis as any).self = globalThis;
+    const postMessageMock = vi.fn();
+    (globalThis as any).postMessage = postMessageMock;
+
+    const setParamsMock: any = vi.fn();
+    setParamsMock.destroy = vi.fn();
+    
+    const pyPayloadMock = { destroy: vi.fn() };
+
+    const workerModule = await import('../workers/pythonEngine.worker');
+    workerModule._testSetPandasLoaded(true);
+    workerModule._testSetPyodide({
+      globals: {
+        get: (name: string) => {
+          if (name === 'set_strategy_params') return setParamsMock;
+          throw new Error('Unmocked function: ' + name);
+        }
+      },
+      toPy: () => pyPayloadMock
+    });
+
+    await workerModule._testSendMessage({ type: 'SET_STRATEGY_PARAMS', payload: { foo: 'bar' } });
+
+    expect(setParamsMock).toHaveBeenCalled();
+    expect(postMessageMock).toHaveBeenCalledWith({ type: 'STRATEGY_PARAMS_UPDATED' });
+    expect(setParamsMock.destroy).toHaveBeenCalled();
+    expect(pyPayloadMock.destroy).toHaveBeenCalled();
+  });
+
+  it('destroys proxies even if set_strategy_params throws', async () => {
+    (globalThis as any).self = globalThis;
+    const postMessageMock = vi.fn();
+    (globalThis as any).postMessage = postMessageMock;
+
+    const setParamsMock: any = vi.fn(() => { throw new Error('failure'); });
+    setParamsMock.destroy = vi.fn();
+    
+    const pyPayloadMock = { destroy: vi.fn() };
+
+    const workerModule = await import('../workers/pythonEngine.worker');
+    workerModule._testSetPandasLoaded(true);
+    workerModule._testSetPyodide({
+      globals: {
+        get: (name: string) => {
+          if (name === 'set_strategy_params') return setParamsMock;
+          throw new Error('Unmocked function: ' + name);
+        }
+      },
+      toPy: () => pyPayloadMock
+    });
+
+    await workerModule._testSendMessage({ type: 'SET_STRATEGY_PARAMS', payload: { foo: 'bar' } });
+
+    expect(postMessageMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'ERROR' }));
+    expect(setParamsMock.destroy).toHaveBeenCalled();
+    expect(pyPayloadMock.destroy).toHaveBeenCalled();
+  });
+
+  it('calls run_adhoc_analysis and destroys proxies', async () => {
+    (globalThis as any).self = globalThis;
+    const postMessageMock = vi.fn();
+    (globalThis as any).postMessage = postMessageMock;
+
+    const adhocFnMock: any = vi.fn(() => ({
+      toJs: () => ({ result: 42 }),
+      destroy: vi.fn()
+    }));
+    adhocFnMock.destroy = vi.fn();
+    
+    const pyPayloadMock = { destroy: vi.fn() };
+
+    const workerModule = await import('../workers/pythonEngine.worker');
+    workerModule._testSetPandasLoaded(true);
+    workerModule._testSetPyodide({
+      globals: {
+        get: (name: string) => {
+          if (name === 'run_adhoc_analysis') return adhocFnMock;
+          throw new Error('Unmocked function: ' + name);
+        }
+      },
+      toPy: () => pyPayloadMock
+    });
+
+    await workerModule._testSendMessage({ type: 'RUN_ADHOC', payload: { data: [1, 2, 3] } });
+
+    expect(adhocFnMock).toHaveBeenCalled();
+    expect(postMessageMock).toHaveBeenCalledWith({ type: 'ADHOC_RESULT', data: { result: 42 } });
+    expect(adhocFnMock.destroy).toHaveBeenCalled();
+    expect(pyPayloadMock.destroy).toHaveBeenCalled();
+    // The results object returned by adhocFnMock() should also be destroyed
+    const results = adhocFnMock.mock.results[0].value;
+    expect(results.destroy).toHaveBeenCalled();
+  });
+
+  it('destroys proxies even if run_adhoc_analysis throws', async () => {
+    (globalThis as any).self = globalThis;
+    const postMessageMock = vi.fn();
+    (globalThis as any).postMessage = postMessageMock;
+
+    const adhocFnMock: any = vi.fn(() => { throw new Error('adhoc failure'); });
+    adhocFnMock.destroy = vi.fn();
+    
+    const pyPayloadMock = { destroy: vi.fn() };
+
+    const workerModule = await import('../workers/pythonEngine.worker');
+    workerModule._testSetPandasLoaded(true);
+    workerModule._testSetPyodide({
+      globals: {
+        get: (name: string) => {
+          if (name === 'run_adhoc_analysis') return adhocFnMock;
+          throw new Error('Unmocked function: ' + name);
+        }
+      },
+      toPy: () => pyPayloadMock
+    });
+
+    await workerModule._testSendMessage({ type: 'RUN_ADHOC', payload: { data: [1, 2, 3] } });
+
+    expect(postMessageMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'ERROR' }));
+    expect(adhocFnMock.destroy).toHaveBeenCalled();
+    expect(pyPayloadMock.destroy).toHaveBeenCalled();
   });
 });
