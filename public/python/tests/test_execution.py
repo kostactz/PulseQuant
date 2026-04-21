@@ -59,9 +59,10 @@ def test_async_legging_state_machine():
     expected_qty = exec_mgr.base_size * 5.0
     assert math.isclose(taker_intent['qty'], expected_qty)
     
-    # Check slippage (5 bps = 0.0005. Price = 10.0, Sell order price = 10 * (1 - 0.0005) = 9.995 -> rounded to 10.0 or 9.99). 
-    # Let's set a higher slippage for the test to ensure price moves after 2 decimal rounding
-    pass # Re-asserted below dynamically
+    # Check slippage-adjusted taker limit price.
+    # With a SELL order, slippage protection should reduce the limit price by slippage_bps.
+    expected_taker_price = round(10.0 * (1 - exec_mgr.slippage_bps / 10000.0), 2)
+    assert taker_intent['price'] == expected_taker_price
     
     # 4. Simulate Taker Fill
     bus.publish('ORDER_UPDATE', {
