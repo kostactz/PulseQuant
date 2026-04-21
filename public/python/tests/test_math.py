@@ -60,4 +60,7 @@ def test_kalman_pandas_comparison():
     # Compare our O(1) implementation to pandas
     # Pandas EWM covariance might have a slightly different initialization or bias correction, 
     # but after warmup it should be very close.
-    pass # Kalman filter gives different results than pandas EWM
+    pytest.skip(
+        "KalmanFilterBivariate is not expected to match pandas EWM exactly; "
+        "this comparison is not a meaningful assertion-based test."
+    )
