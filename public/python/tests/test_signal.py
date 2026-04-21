@@ -57,16 +57,17 @@ def test_signal_generator_timers():
     feature_prices = np.cumsum(np.random.normal(0, 1, 100)) + 100
     target_prices = np.cumsum(np.random.normal(0, 1, 100)) + 100
     
+    target_data = []
+    feature_data = []
     for i in range(1, 101):
-        sg._on_model_updated({
-            'is_ready': True, 
-            'timestamp': i * 1000, 
-            'target_price': target_prices[i-1], 
-            'feature_price': feature_prices[i-1], 
-            'z_score': 0.5
-        })
+        ts = i * 1000
+        target_data.append([ts, target_prices[i-1]])
+        feature_data.append([ts, feature_prices[i-1]])
         
-    sg._on_timer_1m({'timestamp': 100000})
+    bg._run_analytics({
+        'targetData': target_data,
+        'featureData': feature_data
+    })
     
     bus.thread_pool.shutdown(wait=True)
     

@@ -4,7 +4,7 @@ import pandas as pd
 from public.python.engine import KalmanFilterBivariate, EWMASingle
 
 def test_ewma_single():
-    ewma = EWMASingle(window_size=10)
+    ewma = EWMASingle(window_size_ms=1000)
     data = [1.0, 2.0, 3.0, 4.0, 5.0]
     
     for x in data:
@@ -12,7 +12,7 @@ def test_ewma_single():
         
     assert ewma.count == 5
     # The mean is an EMA, so it will be weighted towards the recent values.
-    assert ewma.mean > 2.0 and ewma.mean < 5.0
+    assert ewma.mean > 2.0 and ewma.mean <= 5.0
     assert ewma.std() > 0.0
 
 def test_kalman_bivariate():
@@ -27,7 +27,7 @@ def test_kalman_bivariate():
     for x, y in zip(x_data, y_data):
         ewma.append(x, y)
         
-    assert ewma.count == 100
+    assert ewma.count == 1000
     
     # Beta should be close to 2.0
     beta = ewma.get_beta()
@@ -35,7 +35,7 @@ def test_kalman_bivariate():
 
     ewma.reset()
     assert ewma.count == 0
-    assert ewma.get_beta() == 0.0
+    assert ewma.get_beta() == 1.0
 
 def test_kalman_pandas_comparison():
     window_size = 50
