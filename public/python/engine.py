@@ -787,8 +787,8 @@ class PortfolioManager:
             symbol = payload.get('symbol', '').upper()
             if not symbol:
                 return
-            qty = float(payload.get('filled_qty', 0.0))
-            price = float(payload.get('price', 0.0))
+            qty = float(payload.get('filled_qty') or payload.get('qty') or 0.0)
+            price = float(payload.get('price') or payload.get('avg_price') or 0.0)
             side = payload.get('side', '').upper()
             # Accept is_maker from replay EXECUTION_REPORT
             is_maker = bool(payload.get('is_maker', False))
@@ -1056,22 +1056,22 @@ class ExecutionManager:
         
         self.bus.publish('OUTBOUND_INTENT', {
             'action': 'PLACE_ORDER',
-            'order_id': str(uuid.uuid4()),
+            'clientOrderId': str(uuid.uuid4()),
             'symbol': self.target,
             'side': target_side,
             'type': 'MARKET',
-            'qty': target_qty,
+            'quantity': target_qty,
             'price': 0.0,
             'position_id': self.current_position_id
         })
         
         self.bus.publish('OUTBOUND_INTENT', {
             'action': 'PLACE_ORDER',
-            'order_id': str(uuid.uuid4()),
+            'clientOrderId': str(uuid.uuid4()),
             'symbol': self.feature,
             'side': feature_side,
             'type': 'MARKET',
-            'qty': feature_qty,
+            'quantity': feature_qty,
             'price': 0.0,
             'position_id': self.current_position_id
         })
@@ -1098,19 +1098,19 @@ class ExecutionManager:
         status = payload.get('status')
         symbol = payload.get('symbol', 'UNKNOWN')
         side = payload.get('side', 'UNKNOWN')
-        order_id = payload.get('order_id', payload.get('clientOrderId', 'UNKNOWN'))
-        qty = payload.get('qty', payload.get('quantity', payload.get('origQty', 0.0)))
+        order_id = payload.get('order_id') or payload.get('clientOrderId') or 'UNKNOWN'
+        qty = float(payload.get('qty') or payload.get('quantity') or payload.get('origQty') or payload.get('filled_qty') or 0.0)
         
         if status == 'NEW':
             self.bus.publish('LOG', {'level': 'INFO', 'message': f'Order Initiated: {side} {qty} {symbol} [OrderID: {order_id}]'})
         elif status == 'PARTIALLY_FILLED':
-            filled = payload.get('filled_qty', payload.get('executedQty', 0.0))
+            filled = float(payload.get('filled_qty') or payload.get('executedQty') or 0.0)
             self.bus.publish('LOG', {'level': 'INFO', 'message': f'Order Updated (Partial Fill): {side} {filled}/{qty} {symbol} [OrderID: {order_id}]'})
         elif status in ['CANCELED', 'REJECTED', 'EXPIRED']:
             self.bus.publish('LOG', {'level': 'ERROR', 'message': f'Order {status}: {side} {qty} {symbol} [OrderID: {order_id}]'})
 
         if status == 'FILLED':
-            price = payload.get('price', payload.get('avg_price', 0.0))
+            price = float(payload.get('price') or payload.get('avg_price') or 0.0)
             self.bus.publish('LOG', {'level': 'INFO', 'message': f'Order Executed (Filled): {side} {qty} {symbol} @ {price} [OrderID: {order_id}]'})
 
             if self.state == 'HEDGED' and self.position_entry_ts == 0:

@@ -122,38 +122,47 @@ export function useMarketData(connectEnabled: boolean = true, tradingMode: Tradi
       const execFn = async (intent: Intent) => {
         if (!adapterRef.current) return;
         
+        const qty = intent.quantity || (intent as any).qty || 0;
+        const orderId = intent.clientOrderId || (intent as any).order_id || `sim-${Date.now()}`;
+        const price = intent.price || (intent as any).price || 0;
+
         if (tradingModeRef.current === 'PAPER') {
           logger.orderFlow('Paper Trading Simulation intent:', intent);
           
-          // Fake execution report back to engine to keep the mock portfolio running
           if (intent.action === 'PLACE_ORDER') {
             const normalizedIntentSymbol = intent.symbol.toLowerCase();
             const latestTick =
               latestTickRefs.current[normalizedIntentSymbol] ??
-              latestTickRefs.current[intent.symbol];
+              latestTickRefs.current[intent.symbol] ??
+              latestTickRefs.current[intent.symbol.toUpperCase()];
 
             setTimeout(() => {
               if (onExecutionReportImmediateRef.current) {
                 onExecutionReportImmediateRef.current({
-                  order_id: intent.clientOrderId,
+                  order_id: orderId,
+                  clientOrderId: orderId,
                   status: 'NEW',
                   symbol: intent.symbol,
                   side: intent.side,
+                  quantity: qty,
                   filled_qty: 0,
-                  price: intent.price || 0,
+                  price: price,
                   is_maker: intent.type === 'LIMIT',
                   transaction_time: Date.now(),
                 });
                 
                 // Simulate fill for market orders or test limits
                 setTimeout(() => {
+                  const fillPrice = price || (intent.side === 'BUY' ? (latestTick?.ask || 100.05) : (latestTick?.bid || 100.00));
                   onExecutionReportImmediateRef.current!({
-                    order_id: intent.clientOrderId,
+                    order_id: orderId,
+                    clientOrderId: orderId,
                     status: 'FILLED',
                     symbol: intent.symbol,
                     side: intent.side,
-                    filled_qty: intent.quantity,
-                    price: intent.price || (intent.side === 'BUY' ? latestTick?.ask : latestTick?.bid),
+                    quantity: qty,
+                    filled_qty: qty,
+                    price: fillPrice,
                     is_maker: intent.type === 'LIMIT',
                     transaction_time: Date.now(),
                   });
@@ -164,7 +173,8 @@ export function useMarketData(connectEnabled: boolean = true, tradingMode: Tradi
             setTimeout(() => {
               if (onExecutionReportImmediateRef.current) {
                 onExecutionReportImmediateRef.current({
-                  order_id: intent.clientOrderId,
+                  order_id: orderId,
+                  clientOrderId: orderId,
                   status: 'CANCELED',
                   symbol: intent.symbol,
                   filled_qty: 0,
@@ -181,20 +191,22 @@ export function useMarketData(connectEnabled: boolean = true, tradingMode: Tradi
           await (adapterRef.current as any).placeOrder(
             intent.symbol, 
             intent.side, 
-            intent.quantity, 
-            intent.price,
-            intent.clientOrderId,
+            qty, 
+            price,
+            orderId,
             intent.type,
             intent.timeInForce
           );
           if (onExecutionReportImmediateRef.current) {
             onExecutionReportImmediateRef.current({
-              order_id: intent.clientOrderId,
+              order_id: orderId,
+              clientOrderId: orderId,
               status: 'NEW',
               symbol: intent.symbol,
               side: intent.side,
+              quantity: qty,
               filled_qty: 0,
-              price: intent.price || 0,
+              price: price,
               is_maker: intent.type === 'LIMIT',
               transaction_time: Date.now(),
             });
