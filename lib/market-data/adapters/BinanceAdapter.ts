@@ -393,39 +393,34 @@ export class BinanceAdapter implements MarketDataAdapter {
       topAskQty = ticker.askQty;
     }
 
-    const GROUP_SIZE = symbol === 'ethusdt' ? 1 : 10;
-    const LIMIT = 20;
+    const midPrice = (topBidPrice + topAskPrice) / 2;
+    const partitionRange = 0.1; // 10%
+    const partitionCount = 20;
+    const binSize = (midPrice * partitionRange) / partitionCount;
 
-    const groupLevels = (levels: [number, number][], isAsk: boolean, groupSize: number, limit: number) => {
-      const result: [number, number][] = [];
-      let currentGroupPrice = -1;
-      let currentGroupVol = 0;
-      
+    const groupLevels = (levels: [number, number][], isAsk: boolean) => {
+      const bins: Record<number, number> = {};
       for (const [price, vol] of levels) {
-        const groupedPrice = isAsk 
-          ? Math.ceil(price / groupSize) * groupSize 
-          : Math.floor(price / groupSize) * groupSize;
-          
-        if (currentGroupPrice === -1) {
-          currentGroupPrice = groupedPrice;
-          currentGroupVol = vol;
-        } else if (groupedPrice === currentGroupPrice) {
-          currentGroupVol += vol;
-        } else {
-          result.push([currentGroupPrice, currentGroupVol]);
-          if (result.length >= limit) break;
-          currentGroupPrice = groupedPrice;
-          currentGroupVol = vol;
-        }
+        const priceDiff = isAsk ? price - midPrice : midPrice - price;
+        if (priceDiff < 0 || priceDiff > midPrice * partitionRange) continue;
+        
+        const binIndex = Math.floor(priceDiff / binSize);
+        if (binIndex >= partitionCount) continue;
+        
+        const binPrice = isAsk 
+          ? midPrice + (binIndex + 1) * binSize 
+          : midPrice - (binIndex + 1) * binSize;
+        
+        bins[binPrice] = (bins[binPrice] || 0) + vol;
       }
-      if (result.length < limit && currentGroupPrice !== -1) {
-        result.push([currentGroupPrice, currentGroupVol]);
-      }
-      return result;
+      
+      return Object.entries(bins)
+        .map(([p, v]) => [parseFloat(p), v] as [number, number])
+        .sort((a, b) => isAsk ? a[0] - b[0] : b[0] - a[0]);
     };
 
-    const groupedBids = groupLevels(sortedBids, false, GROUP_SIZE, LIMIT);
-    const groupedAsks = groupLevels(sortedAsks, true, GROUP_SIZE, LIMIT);
+    const groupedBids = groupLevels(sortedBids, false);
+    const groupedAsks = groupLevels(sortedAsks, true);
 
     const exportedBids = sortedBids.slice(0, 20).map(x => [...x] as [number, number]);
     const exportedAsks = sortedAsks.slice(0, 20).map(x => [...x] as [number, number]);
