@@ -721,7 +721,7 @@ export default function Dashboard() {
                 <div>
                   <p className="text-sm text-gray-500 font-medium">Target Price</p>
                   <p className="text-xl font-semibold font-mono">
-                    {currentState.spread_metrics?.target_price?.toFixed(2) ?? "0.00"}
+                    {currentState.spread_metrics?.target_price?.toFixed(5) ?? "0.00"}
                   </p>
                 </div>
               </div>
@@ -732,7 +732,7 @@ export default function Dashboard() {
                 </div>
                 <div className="flex flex-col">
                   <p className="text-sm text-gray-500 font-medium">Feature Price</p>
-                  <p className="text-xl font-semibold font-mono">{currentState.spread_metrics?.feature_price?.toFixed(2) ?? '0.00'}</p>
+                  <p className="text-xl font-semibold font-mono">{currentState.spread_metrics?.feature_price?.toFixed(5) ?? '0.00'}</p>
                 </div>
               </div>
             </div>
