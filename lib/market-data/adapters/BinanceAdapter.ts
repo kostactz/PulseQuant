@@ -202,11 +202,12 @@ export class BinanceAdapter implements MarketDataAdapter {
         logger.binance('User Data Stream Connected');
         if (this.syncStateCallback) {
           try {
-            const [openOrders, accountInfo] = await Promise.all([
-              // We could fetch open orders for all symbols here, but this might be costly, or we can just fetch all open orders without symbol
-              this.fetchOpenOrders(''),
+            const [openOrdersResult, accountInfo] = await Promise.all([
+              // Fetch open orders targeted to our subscribed symbols to avoid rate limits
+              Promise.all(this.symbols.map(sym => this.fetchOpenOrders(sym))),
               this.fetchAccountInformation()
             ]);
+            const openOrders = openOrdersResult.flat();
             
             let capital = null;
             let positions: Record<string, number> = {};

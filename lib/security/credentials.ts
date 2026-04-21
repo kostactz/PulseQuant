@@ -1,10 +1,11 @@
 import { deriveKey, encryptData, decryptData } from './crypto';
 
-const STORAGE_KEY = 'PulseQuant_encrypted_credentials';
+const getStorageKey = (env: string) => `PulseQuant_encrypted_credentials_${env}`;
 
 export interface Credentials {
   apiKey: string;
   apiSecret: string;
+  env?: string;
 }
 
 interface EncryptedPayload {
@@ -16,37 +17,39 @@ interface EncryptedPayload {
 /**
  * Checks if encrypted credentials exist in localStorage.
  */
-export function hasSavedCredentials(): boolean {
+export function hasSavedCredentials(env: string): boolean {
   if (typeof window === 'undefined') return false;
-  return !!localStorage.getItem(STORAGE_KEY);
+  return !!localStorage.getItem(getStorageKey(env));
 }
 
 /**
  * Encrypts and saves credentials to localStorage using the provided KEK (password).
  */
-export async function saveCredentials(kek: string, creds: Credentials): Promise<void> {
+export async function saveCredentials(kek: string, creds: Credentials, env: string): Promise<void> {
   const { key, salt } = await deriveKey(kek);
   const payloadStr = JSON.stringify(creds);
   const { ciphertext, iv } = await encryptData(payloadStr, key);
 
   const payload: EncryptedPayload = { salt, iv, ciphertext };
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+  localStorage.setItem(getStorageKey(env), JSON.stringify(payload));
 }
 
 /**
  * Loads and decrypts credentials from localStorage using the provided KEK (password).
  */
-export async function loadCredentials(kek: string): Promise<Credentials | null> {
+export async function loadCredentials(kek: string, env: string): Promise<Credentials | null> {
   if (typeof window === 'undefined') return null;
 
-  const stored = localStorage.getItem(STORAGE_KEY);
+  const stored = localStorage.getItem(getStorageKey(env));
   if (!stored) return null;
 
   try {
     const payload: EncryptedPayload = JSON.parse(stored);
     const { key } = await deriveKey(kek, payload.salt);
     const decryptedStr = await decryptData(payload.ciphertext, payload.iv, key);
-    return JSON.parse(decryptedStr) as Credentials;
+    const creds = JSON.parse(decryptedStr) as Credentials;
+    creds.env = env;
+    return creds;
   } catch (err) {
     console.error('Failed to decrypt credentials. Incorrect KEK or corrupted data.');
     return null;
@@ -56,9 +59,9 @@ export async function loadCredentials(kek: string): Promise<Credentials | null> 
 /**
  * Removes the saved credentials from localStorage.
  */
-export function clearCredentials(): void {
+export function clearCredentials(env: string): void {
   if (typeof window === 'undefined') return;
-  localStorage.removeItem(STORAGE_KEY);
+  localStorage.removeItem(getStorageKey(env));
 }
 
 // In-memory runtime storage for decrypted keys so they aren't kept in localStorage
@@ -68,7 +71,7 @@ export function setRuntimeCredentials(creds: Credentials) {
   runtimeCredentials = creds;
 }
 
-export function getRuntimeCredentials(): Credentials | null {
+export function getRuntimeCredentials(env?: string): Credentials | null {
   // If we're in Node.js (headless mode), attempt to parse from argv
   if (typeof window === 'undefined' && !runtimeCredentials) {
     const apiKeyArg = process.argv.find(arg => arg.startsWith('--api-key='));
@@ -77,9 +80,14 @@ export function getRuntimeCredentials(): Credentials | null {
     if (apiKeyArg && apiSecretArg) {
       runtimeCredentials = {
         apiKey: apiKeyArg.split('=')[1],
-        apiSecret: apiSecretArg.split('=')[1]
+        apiSecret: apiSecretArg.split('=')[1],
+        env: env // Default to whatever is requested
       };
     }
+  }
+
+  if (runtimeCredentials && env && runtimeCredentials.env !== env) {
+    return null; // Don't leak credentials across environments
   }
 
   return runtimeCredentials;
