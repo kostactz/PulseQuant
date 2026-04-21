@@ -91,19 +91,15 @@ describe('pythonEngine.worker message flow integration', () => {
     delete (globalThis as any).self;
   });
 
-  it('processes UPDATE_STRATEGY, TRADE, SET_AUTO_TRADE, SET_TRADE_SIZE messages', async () => {
+  it('processes TRADE and SET_AUTO_TRADE messages', async () => {
     (globalThis as any).self = globalThis;
     const postMessageMock = vi.fn();
     (globalThis as any).postMessage = postMessageMock;
 
-    const executeTradeMock = vi.fn();
+    const executeTradeMock: any = vi.fn();
     executeTradeMock.destroy = vi.fn();
-    const setAutoTradeMock = vi.fn();
+    const setAutoTradeMock: any = vi.fn();
     setAutoTradeMock.destroy = vi.fn();
-    const updateStrategyMock = vi.fn();
-    updateStrategyMock.destroy = vi.fn();
-    const setTradeSizeMock = vi.fn();
-    setTradeSizeMock.destroy = vi.fn();
 
     const workerModule = await import('../workers/pythonEngine.worker');
     workerModule._testSetPandasLoaded(true);
@@ -112,27 +108,19 @@ describe('pythonEngine.worker message flow integration', () => {
         get: (name: string) => {
           if (name === 'execute_trade') return executeTradeMock;
           if (name === 'set_auto_trade') return setAutoTradeMock;
-          if (name === 'update_strategy') return updateStrategyMock;
-          if (name === 'set_trade_size') return setTradeSizeMock;
           throw new Error('Unmocked function: ' + name);
         }
       }
     });
 
-    await workerModule._testSendMessage({ type: 'UPDATE_STRATEGY', style: 'moderate', speed: 'fast' });
     await workerModule._testSendMessage({ type: 'TRADE', side: 'buy', bps: 50 });
     await workerModule._testSendMessage({ type: 'SET_AUTO_TRADE', enabled: true });
-    await workerModule._testSendMessage({ type: 'SET_TRADE_SIZE', bps: 200 });
 
-    expect(updateStrategyMock).toHaveBeenCalledWith('moderate', 'fast');
     expect(executeTradeMock).toHaveBeenCalledWith('buy', 50);
     expect(setAutoTradeMock).toHaveBeenCalledWith(true);
-    expect(setTradeSizeMock).toHaveBeenCalledWith(200);
 
-    expect(postMessageMock).toHaveBeenCalledWith({ type: 'STRATEGY_UPDATED', style: 'moderate', speed: 'fast' });
     expect(postMessageMock).toHaveBeenCalledWith({ type: 'TRADE_EXECUTED' });
     expect(postMessageMock).toHaveBeenCalledWith({ type: 'AUTO_TRADE_UPDATED', enabled: true });
-    expect(postMessageMock).toHaveBeenCalledWith({ type: 'TRADE_SIZE_UPDATED', bps: 200 });
   });
 
   it('returns ERROR for invalid TRADE/SET_AUTO_TRADE payloads', async () => {

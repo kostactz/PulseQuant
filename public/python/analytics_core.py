@@ -128,7 +128,7 @@ def calculate_rolling_metrics(df_in, window_size, delta=1e-5, r_var=1e-3):
     df_calc['Z_Score'] = df_calc['Dynamic_Spread'] / (df_calc['Spread_Std'] + 1e-10)
     return df_calc
 
-def optimize_parameters(df_in, half_life_periods, interval, args_rolling_window='auto', args_sigma_threshold='auto', taker_fee=0.05, verbose=False):
+def optimize_parameters(df_in, half_life_periods, interval, args_rolling_window='auto', args_sigma_threshold='auto', taker_fee=5.0, verbose=False):
     # ANSI terminal colors
     RESET = '\033[0m'
     YELLOW = '\033[93m'
@@ -180,7 +180,7 @@ def optimize_parameters(df_in, half_life_periods, interval, args_rolling_window=
         chunks.pop() # Drop extremely small last chunk
     
     scores = {(w, t): {'returns': [], 'mdd': [], 'pvalue': []} for w in candidate_windows for t in candidate_thresholds}
-    taker_pct = taker_fee / 100.0
+    taker_pct = taker_fee / 10000.0
     
     for w in candidate_windows:
         if verbose:

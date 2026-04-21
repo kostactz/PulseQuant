@@ -100,8 +100,10 @@ parser.add_argument('--sigma-threshold', default='2.0', help='Z-score threshold 
 parser.add_argument('--rolling-window-only', action='store_true', help='Only calculate the optimal rolling window and exit.')
 parser.add_argument('--verbose', action='store_true', help='Show verbose progress updates during data fetching.')
 parser.add_argument('--backtest', type=float, nargs='?', const=20.0, default=0.0, help='Run an OOS backtest. Specify OOS percentage (default: 20 if flag is present).')
-parser.add_argument('--taker-fee', type=float, default=0.05, help='Taker fee in percentage (default: 0.05).')
-parser.add_argument('--maker-fee', type=float, default=0.02, help='Maker fee in percentage (default: 0.02).')
+parser.add_argument('--taker-fee', type=float, default=5.0, help='Taker fee in bps (default: 5.0).')
+parser.add_argument('--maker-fee', type=float, default=2.0, help='Maker fee in bps (default: 2.0).')
+parser.add_argument('--min-entry-spread', type=float, default=0.0, help='Minimum spread in bps to enter a trade.')
+parser.add_argument('--slippage', type=float, default=0.0, help='Slippage in bps applied to both sides of the trade.')
 parser.add_argument('--ticker-list', nargs='+', help='List of tickers to test against each other. Overrides target/feature ticker args.')
 args = parser.parse_args()
 
@@ -680,10 +682,10 @@ def analyze_pair(target_ticker, feature_ticker, target_df, feature_df, batch_mod
     
     ax4 = plt.subplot(2, 2, 4)
     ax4.hist(df['Z_Score'].clip(-10, 10), bins=60, range=(-10, 10), density=True, color='skyblue', edgecolor='black', alpha=0.7)
-    x_vals = np.linspace(-10, 10, 300)
+    x_vals = np.linspace(-7.5, 7.5, 150)
     normal_pdf = (1.0 / np.sqrt(2 * np.pi)) * np.exp(-0.5 * x_vals**2)
     ax4.plot(x_vals, normal_pdf, color='red', linestyle='--', linewidth=2, label='Standard Normal PDF')
-    ax4.set_xlim(-10, 10)
+    ax4.set_xlim(-7.5, 7.5)
     ax4.set_title('Z-Score Distribution vs. Expected Normal')
     ax4.set_xlabel('Z-Score')
     ax4.set_ylabel('Density')
@@ -720,8 +722,8 @@ def analyze_pair(target_ticker, feature_ticker, target_df, feature_df, batch_mod
     
     if args.backtest:
         _print("\n[8/7] Running Analytical Performance Backtest...")
-        taker_pct = args.taker_fee / 100.0
-        maker_pct = args.maker_fee / 100.0
+        taker_pct = args.taker_fee / 10000.0
+        maker_pct = args.maker_fee / 10000.0
     
         if 'split_timestamp' in locals():
             bt_df = df[df.index >= split_timestamp].copy()
@@ -735,7 +737,9 @@ def analyze_pair(target_ticker, feature_ticker, target_df, feature_df, batch_mod
         features = bt_df['Feature_Price'].values
         targets = bt_df['Close'].values
         betas = bt_df['Rolling_Beta'].shift(1).fillna(0).values
-    
+        spread_bps_vals = bt_df['Dynamic_Spread'].values * 10000
+        slippage_pct = args.slippage / 10000.0
+
         # Pre-allocate arrays
         n = len(bt_df)
         gross_returns = np.zeros(n)
@@ -758,9 +762,9 @@ def analyze_pair(target_ticker, feature_ticker, target_df, feature_df, batch_mod
     
             # Transition Logic (0-period latency execution identically to optimizer)
             if pos == 0:
-                if z[i-1] < -opt_sigma:
+                if z[i-1] < -opt_sigma and abs(spread_bps_vals[i-1]) >= args.min_entry_spread:
                     pos = 1
-                elif z[i-1] > opt_sigma:
+                elif z[i-1] > opt_sigma and abs(spread_bps_vals[i-1]) >= args.min_entry_spread:
                     pos = -1
             elif pos == 1:
                 if z[i-1] >= 0.0:
@@ -781,7 +785,7 @@ def analyze_pair(target_ticker, feature_ticker, target_df, feature_df, batch_mod
             if turnover > 0:
                 if prev_pos == 0 and pos != 0:
                     # Entry (Maker)
-                    fee = maker_pct
+                    fee = maker_pct + slippage_pct
                     if args.verbose:
                         active_trade = {
                             'entry_time': bt_df.index[i-1],
@@ -794,7 +798,7 @@ def analyze_pair(target_ticker, feature_ticker, target_df, feature_df, batch_mod
                         }
                 elif prev_pos != 0 and pos == 0:
                     # Exit (Taker)
-                    fee = taker_pct
+                    fee = taker_pct + slippage_pct
                     if args.verbose and active_trade:
                         total_fee = active_trade['entry_fee'] + fee
                         trade_gross = active_trade['cum_gross']
@@ -803,9 +807,9 @@ def analyze_pair(target_ticker, feature_ticker, target_df, feature_df, batch_mod
                         active_trade = None
                 elif prev_pos != 0 and pos != 0 and prev_pos != pos:
                     # Flip: Exit current (Taker) and Entry new (Maker)
-                    fee = taker_pct + maker_pct
+                    fee = taker_pct + maker_pct + (2 * slippage_pct)
                     if args.verbose and active_trade:
-                        total_fee = active_trade['entry_fee'] + taker_pct
+                        total_fee = active_trade['entry_fee'] + taker_pct + slippage_pct
                         trade_gross = active_trade['cum_gross']
                         trade_net = trade_gross - total_fee
                         _print(f"[Verbose] Trade Closed [{active_trade['side']}]: Entry {active_trade['entry_time']} Target={active_trade['entry_target']:.4f} Feature={active_trade['entry_feature']:.4f} Spread Z={active_trade['entry_spread']:.2f} | Exit {bt_df.index[i-1]} Target={targets[i-1]:.4f} Feature={features[i-1]:.4f} Spread Z={z[i-1]:.2f} | Fees: {total_fee:.4%} | Gross: {trade_gross:.4%} | Net: {trade_net:.4%}")
@@ -816,18 +820,23 @@ def analyze_pair(target_ticker, feature_ticker, target_df, feature_df, batch_mod
                             'entry_target': targets[i-1],
                             'entry_feature': features[i-1],
                             'entry_spread': z[i-1],
-                            'entry_fee': maker_pct,
+                            'entry_fee': maker_pct + slippage_pct,
                             'cum_gross': 0.0
                         }
     
                 period_net_return -= fee
                 trades += turnover
                 
-            if active_trade:
+            if active_trade and gross_returns[i] < 0.5:
                 active_trade['cum_gross'] += gross_returns[i]
-    
+            else:
+                gross_returns[i] = 0.0
+                period_net_return = 0.0
+          
+
             net_returns[i] = period_net_return
     
+
         bt_df['Gross_Return'] = gross_returns
         bt_df['Net_Return'] = net_returns
         bt_df['Cumulative_Gross'] = bt_df['Gross_Return'].cumsum()

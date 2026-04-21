@@ -1,13 +1,13 @@
 import { logger } from "@/lib/logger";
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { MarketDataAdapter, NormalizedTick } from '@/lib/market-data/types';
+import { FundingRateData, MarketDataAdapter, NormalizedTick } from '@/lib/market-data/types';
 import { BinanceAdapter } from '@/lib/market-data/adapters/BinanceAdapter';
 import { MockAdapter } from '@/lib/market-data/adapters/MockAdapter';
 import { OrderManager, Intent } from '@/lib/order/OrderManager';
 
 export type TradingMode = 'PAPER' | 'TESTNET' | 'MAINNET';
 
-export function useMarketData(connectEnabled: boolean = true, tradingMode: TradingMode = 'PAPER', onTickImmediate?: (tick: NormalizedTick) => void, onExecutionReportImmediate?: (report: any) => void, onSyncStateImmediate?: (state: any) => void) {
+export function useMarketData(connectEnabled: boolean = true, tradingMode: TradingMode = 'PAPER', onTickImmediate?: (tick: NormalizedTick) => void, onExecutionReportImmediate?: (report: any) => void, onSyncStateImmediate?: (state: any) => void, onFundingRateImmediate?: (event: any) => void) {
   const [orderBooks, setOrderBooks] = useState<Record<string, { bids: [number, number][], asks: [number, number][] }>>({});
   const [latestTicks, setLatestTicks] = useState<Record<string, NormalizedTick>>({});
   const buffer = useRef<NormalizedTick[]>([]);
@@ -20,6 +20,7 @@ export function useMarketData(connectEnabled: boolean = true, tradingMode: Tradi
   const onTickImmediateRef = useRef(onTickImmediate);
   const onExecutionReportImmediateRef = useRef(onExecutionReportImmediate);
   const onSyncStateImmediateRef = useRef(onSyncStateImmediate);
+  const onFundingRateImmediateRef = useRef(onFundingRateImmediate);
   const tradingModeRef = useRef(tradingMode);
   
   // 1. Connection Setup and State Management
@@ -31,14 +32,32 @@ export function useMarketData(connectEnabled: boolean = true, tradingMode: Tradi
     onTickImmediateRef.current = onTickImmediate; 
     onExecutionReportImmediateRef.current = onExecutionReportImmediate; 
     onSyncStateImmediateRef.current = onSyncStateImmediate;
+    onFundingRateImmediateRef.current = onFundingRateImmediate;
     tradingModeRef.current = tradingMode;
-  }, [onTickImmediate, onExecutionReportImmediate, onSyncStateImmediate, tradingMode]);
+  }, [onTickImmediate, onExecutionReportImmediate, onSyncStateImmediate, onFundingRateImmediate, tradingMode]);
 
   const adapterRef = useRef<MarketDataAdapter | null>(null);
   const orderManagerRef = useRef<OrderManager | null>(null);
   const currentAdapterMode = useRef<TradingMode | null>(null);
 
-  const lastRenderTimeRef = useRef(0);
+  const scheduledFlushRef = useRef(false);
+  const flushTimeoutRef = useRef<number | null>(null);
+  const flushCounterRef = useRef(0);
+
+  const scheduleTickFlush = useCallback(() => {
+    if (scheduledFlushRef.current) return;
+    scheduledFlushRef.current = true;
+    flushTimeoutRef.current = window.setTimeout(() => {
+      setOrderBooks({ ...orderBookRefs.current });
+      setLatestTicks({ ...latestTickRefs.current });
+      scheduledFlushRef.current = false;
+      flushTimeoutRef.current = null;
+      flushCounterRef.current += 1;
+      if (flushCounterRef.current % 10 === 0) {
+        logger.debug(`[useMarketData] tick flush #${flushCounterRef.current} executed`);
+      }
+    }, 100);
+  }, []);
 
   useEffect(() => {
     // For PAPER mode, connect to Mainnet (isTestnet = false) but disable User Data Stream.
@@ -72,6 +91,14 @@ export function useMarketData(connectEnabled: boolean = true, tradingMode: Tradi
         });
       }
 
+      if (adapterRef.current.onMarkPriceUpdate) {
+        adapterRef.current.onMarkPriceUpdate((fundingData: FundingRateData) => {
+          if (onFundingRateImmediateRef.current) {
+            onFundingRateImmediateRef.current({ type: 'FUNDING_RATE_UPDATE', data: fundingData });
+          }
+        });
+      }
+
       adapterRef.current.onTick((tick) => {
         buffer.current.push(tick);
         const sym = tick.symbol || 'UNKNOWN';
@@ -86,13 +113,7 @@ export function useMarketData(connectEnabled: boolean = true, tradingMode: Tradi
           recordedTicks.current.push(tick);
         }
         
-        // Use strict time-based throttling for UI rendering (e.g., max 10 FPS = 100ms)
-        const now = Date.now();
-        if (now - lastRenderTimeRef.current >= 100) {
-          setOrderBooks({ ...orderBookRefs.current });
-          setLatestTicks({ ...latestTickRefs.current });
-          lastRenderTimeRef.current = now;
-        }
+        scheduleTickFlush();
       });
     }
 
@@ -113,21 +134,27 @@ export function useMarketData(connectEnabled: boolean = true, tradingMode: Tradi
             setTimeout(() => {
               if (onExecutionReportImmediateRef.current) {
                 onExecutionReportImmediateRef.current({
-                  clientOrderId: intent.clientOrderId,
+                  order_id: intent.clientOrderId,
                   status: 'NEW',
-                  lastFilledQuantity: 0,
-                  lastFilledPrice: intent.price || 0,
-                  transactionTime: Date.now(),
+                  symbol: intent.symbol,
+                  side: intent.side,
+                  filled_qty: 0,
+                  price: intent.price || 0,
+                  is_maker: intent.type === 'LIMIT',
+                  transaction_time: Date.now(),
                 });
                 
                 // Simulate fill for market orders or test limits
                 setTimeout(() => {
                   onExecutionReportImmediateRef.current!({
-                    clientOrderId: intent.clientOrderId,
+                    order_id: intent.clientOrderId,
                     status: 'FILLED',
-                    lastFilledQuantity: intent.quantity,
-                    lastFilledPrice: intent.price || (intent.side === 'BUY' ? latestTick?.ask : latestTick?.bid),
-                    transactionTime: Date.now(),
+                    symbol: intent.symbol,
+                    side: intent.side,
+                    filled_qty: intent.quantity,
+                    price: intent.price || (intent.side === 'BUY' ? latestTickRefs.current[intent.symbol]?.ask : latestTickRefs.current[intent.symbol]?.bid),
+                    is_maker: intent.type === 'LIMIT',
+                    transaction_time: Date.now(),
                   });
                 }, 500);
               }
@@ -136,11 +163,12 @@ export function useMarketData(connectEnabled: boolean = true, tradingMode: Tradi
             setTimeout(() => {
               if (onExecutionReportImmediateRef.current) {
                 onExecutionReportImmediateRef.current({
-                  clientOrderId: intent.clientOrderId,
+                  order_id: intent.clientOrderId,
                   status: 'CANCELED',
-                  lastFilledQuantity: 0,
-                  lastFilledPrice: 0,
-                  transactionTime: Date.now(),
+                  symbol: intent.symbol,
+                  filled_qty: 0,
+                  price: 0,
+                  transaction_time: Date.now(),
                 });
               }
             }, 100);
@@ -160,11 +188,14 @@ export function useMarketData(connectEnabled: boolean = true, tradingMode: Tradi
           );
           if (onExecutionReportImmediateRef.current) {
             onExecutionReportImmediateRef.current({
-              clientOrderId: intent.clientOrderId,
+              order_id: intent.clientOrderId,
               status: 'NEW',
-              lastFilledQuantity: 0,
-              lastFilledPrice: intent.price || 0,
-              transactionTime: Date.now(),
+              symbol: intent.symbol,
+              side: intent.side,
+              filled_qty: 0,
+              price: intent.price || 0,
+              is_maker: intent.type === 'LIMIT',
+              transaction_time: Date.now(),
             });
           }
         } else if (intent.action === 'CANCEL_ORDER') {
@@ -174,11 +205,12 @@ export function useMarketData(connectEnabled: boolean = true, tradingMode: Tradi
           );
           if (onExecutionReportImmediateRef.current) {
             onExecutionReportImmediateRef.current({
-              clientOrderId: intent.clientOrderId,
+              order_id: intent.clientOrderId,
               status: 'CANCELED',
-              lastFilledQuantity: 0,
-              lastFilledPrice: 0,
-              transactionTime: Date.now(),
+              symbol: intent.symbol,
+              filled_qty: 0,
+              price: 0,
+              transaction_time: Date.now(),
             });
           }
         }
@@ -187,11 +219,13 @@ export function useMarketData(connectEnabled: boolean = true, tradingMode: Tradi
       const handleOrderRejected = (intent: Intent, reason: string) => {
         if (onExecutionReportImmediateRef.current) {
           onExecutionReportImmediateRef.current({
-            clientOrderId: intent.clientOrderId,
+            order_id: intent.clientOrderId,
             status: 'REJECTED',
-            lastFilledQuantity: 0,
-            lastFilledPrice: 0,
-            transactionTime: Date.now(),
+            symbol: intent.symbol,
+            side: intent.side,
+            filled_qty: 0,
+            price: 0,
+            transaction_time: Date.now(),
             cancelReason: reason
           });
         }
@@ -237,6 +271,11 @@ export function useMarketData(connectEnabled: boolean = true, tradingMode: Tradi
     return () => {
       // Cleanup on unmount or dependency change
       isStale = true;
+      if (flushTimeoutRef.current !== null) {
+        window.clearTimeout(flushTimeoutRef.current);
+        flushTimeoutRef.current = null;
+        scheduledFlushRef.current = false;
+      }
       void (async () => {
         try {
           await adapter.disconnect();

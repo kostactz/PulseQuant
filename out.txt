@@ -1,0 +1,64 @@
+Loading data from capture.jsonl...
+Loaded 4828400 events.
+Starting replay (slippage=0.0 bps)...
+[1769904025000] INFO: Model warmed up. Beta: 0.9949
+[1769904025000] DEBUG: Entry ignored: Spread 5.47 bps < min 7.0 bps.
+[1769904026000] DEBUG: Entry ignored: Spread 4.91 bps < min 7.0 bps.
+[1769904060000] DEBUG: Entry ignored: Spread 6.46 bps < min 7.0 bps.
+[1769904061000] DEBUG: Entry ignored: Spread 5.80 bps < min 7.0 bps.
+[1769904061000] DEBUG: Entry ignored: Spread 5.20 bps < min 7.0 bps.
+[1769904062000] DEBUG: Entry ignored: Spread 4.66 bps < min 7.0 bps.
+[1769904148000] INFO: LONG_SPREAD signaled. Edge: 17.91 bps, Kelly Notional: 50000.00
+[1769904148000] INFO: Entering LONG_SPREAD for SUSHIUSDC & CAKEUSDC
+[1769904148000] INFO: CLOSE_SPREAD signaled. Exiting SUSHIUSDC & CAKEUSDC [PosID: 33184404]
+[1769904148000] INFO: Order FILLED: BUY 205761.317 SUSHIUSDC @ 0.243. Fee: 25.0000 (Maker: False) [PosID: 33184404]
+[1769904148000] INFO: Order FILLED: SELL 32281.969 CAKEUSDC @ 1.541. Fee: 24.8733 (Maker: False) [PosID: 33184404]
+Progress: 10% (482840/4828400)
+Progress: 20% (965680/4828400)
+Progress: 30% (1448520/4828400)
+Progress: 40% (1931360/4828400)
+Progress: 50% (2414200/4828400)
+Progress: 60% (2897040/4828400)
+Progress: 70% (3379880/4828400)
+Progress: 80% (3862720/4828400)
+Progress: 90% (4345560/4828400)
+Progress: 100% (4828400/4828400)
+Replay finished in 60.54s (79754 events/sec).
+
+=======================================================
+REPLAY RESULTS
+=======================================================
+
+--- Portfolio ---
+Final NAV:           $100431.9529
+Cash:                $99696.6409
+Realized PnL:        $0.0000
+Unrealized PnL:      $473.2948
+Total Fees Paid:     $49.8733
+Total Funding Paid:  $0.000000
+Positions:           {'SUSHIUSDC': 205761.317, 'CAKEUSDC': -32281.969}
+Net Delta:           $735.3120
+
+--- Strategy ---
+Toxicity Flag:       False
+Execution State:     IDLE
+Dynamic Hurdle:      0.0 bps
+
+--- Spread Metrics ---
+Z-Score:             0.0204
+Beta:                0.045056
+Ready:               True
+
+--- Trading Details ---
+Trades Volume:       0 completed legs
+Timed-out Volume:    0 maker timeouts
+Hit Ratio:           0.00%
+Win/Loss Ratio:      0.00 (0 W / 0 L)
+Annualized Sharpe:   0.47
+
+--- Verbose Trade History ---
+Time            | Symbol     | Side  | Qty    | Price      | Fee      | Maker | PnL
+----------------------------------------------------------------------------------
+02-01 01:02:28  | SUSHIUSDC  | buy   | 205761.317 | 0.2430     | 25.0000  | False | 0.0000  
+02-01 01:02:28  | CAKEUSDC   | sell  | 32281.969 | 1.5410     | 24.8733  | False | 0.0000  
+=======================================================

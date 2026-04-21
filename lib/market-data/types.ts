@@ -19,6 +19,13 @@ export interface NormalizedTick {
   asks?: [number, number][];
 }
 
+export interface FundingRateData {
+  symbol: string;
+  fundingRate: number;
+  markPrice: number;
+  timestamp: number;
+}
+
 export interface MarketDataAdapter {
   connect(): Promise<void>;
   disconnect(): Promise<void>;
@@ -28,4 +35,5 @@ export interface MarketDataAdapter {
   onTick(callback: (tick: NormalizedTick) => void): void;
   onExecutionReport?(callback: (report: any) => void): void;
   onSyncState?(callback: (state: any) => void): void;
+  onMarkPriceUpdate?(callback: (data: FundingRateData) => void): void;
 }

@@ -1,5 +1,5 @@
 import { logger } from "../../logger";
-import { MarketDataAdapter, NormalizedTick } from '../types';
+import { FundingRateData, MarketDataAdapter, NormalizedTick } from '../types';
 import { getRuntimeCredentials } from '../../security/credentials';
 
 export class BinanceAdapter implements MarketDataAdapter {
@@ -9,6 +9,7 @@ export class BinanceAdapter implements MarketDataAdapter {
   private executionReportCallback: ((report: any) => void) | null = null;
   private syncStateCallback: ((state: any) => void) | null = null;
   private tickCallback: ((tick: NormalizedTick) => void) | null = null;
+  private markPriceUpdateCallback: ((data: FundingRateData) => void) | null = null;
 
   private isTestnet: boolean;
   private enableUserData: boolean;
@@ -80,7 +81,7 @@ export class BinanceAdapter implements MarketDataAdapter {
   private connectPublic() {
     if (this.publicWs) return;
 
-    const streams = this.symbols.map(s => `${s}@bookTicker/${s}@depth@100ms/${s}@aggTrade`).join('/');
+    const streams = this.symbols.map(s => `${s}@bookTicker/${s}@depth@100ms/${s}@aggTrade/${s}@markPrice`).join('/');
     const ws = new WebSocket(`${this.wsBaseUrl}/stream?streams=${streams}`);
     this.publicWs = ws;
 
@@ -101,6 +102,18 @@ export class BinanceAdapter implements MarketDataAdapter {
       if (stream.includes('@aggTrade')) {
         const vol = this.accumulatedTradeVol.get(symbol) || 0;
         this.accumulatedTradeVol.set(symbol, vol + parseFloat(data.q));
+        return;
+      }
+
+      if (stream.includes('@markPrice')) {
+        if (this.markPriceUpdateCallback) {
+          this.markPriceUpdateCallback({
+            symbol: symbol.toUpperCase(),
+            fundingRate: parseFloat(data.r ?? '0'),
+            markPrice: parseFloat(data.p ?? '0'),
+            timestamp: data.E || Date.now(),
+          });
+        }
         return;
       }
       
@@ -229,11 +242,14 @@ export class BinanceAdapter implements MarketDataAdapter {
           const order = data.o;
           if (this.executionReportCallback) {
             this.executionReportCallback({
-              clientOrderId: order.c,
+              order_id: order.c,
               status: order.X,
-              lastFilledQuantity: order.l,
-              lastFilledPrice: order.L,
-              transactionTime: data.E,
+              symbol: order.s,
+              side: order.S,
+              filled_qty: parseFloat(order.l),
+              price: parseFloat(order.L),
+              is_maker: order.m,
+              transaction_time: data.E,
               cancelReason: order.r
             });
           }
@@ -692,5 +708,9 @@ export class BinanceAdapter implements MarketDataAdapter {
 
   onTick(callback: (tick: NormalizedTick) => void): void {
     this.tickCallback = callback;
+  }
+
+  onMarkPriceUpdate(callback: (data: FundingRateData) => void): void {
+    this.markPriceUpdateCallback = callback;
   }
 }

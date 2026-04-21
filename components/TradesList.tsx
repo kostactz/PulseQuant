@@ -65,8 +65,6 @@ export const TradesList: React.FC<TradesListProps> = ({ trades, cancellations = 
   const [reasonQuery, setReasonQuery] = useState<string>('');
   const [minRestSec, setMinRestSec] = useState<number>(0);
 
-
-
   const filteredEvents = useMemo(() => {
     const q = reasonQuery.trim().toLowerCase();
     return events.filter((e) => {
@@ -99,7 +97,7 @@ export const TradesList: React.FC<TradesListProps> = ({ trades, cancellations = 
   }, [events, eventFilter, sideFilter, reasonQuery, minRestSec]);
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full min-h-0">
       <div className="flex items-center justify-between gap-3 mb-2">
         <div className="inline-flex bg-gray-50 rounded-lg p-1">
           <button className={`px-3 py-1 text-xs ${eventFilter === 'all' ? 'bg-white shadow-sm' : ''}`} onClick={() => setEventFilter('all')}>All</button>
@@ -117,7 +115,8 @@ export const TradesList: React.FC<TradesListProps> = ({ trades, cancellations = 
         </div>
       </div>
 
-      <div className="grid grid-cols-[95px_95px_95px_110px_90px_1fr] text-gray-500 font-medium pb-2 border-b border-gray-200 mb-2 text-xs uppercase tracking-wider">
+      {/* Desktop header */}
+      <div className="hidden sm:grid grid-cols-[95px_95px_95px_110px_90px_1fr] text-gray-500 font-medium pb-2 border-b border-gray-200 mb-2 text-xs uppercase tracking-wider">
         <div>Time</div>
         <div>Event</div>
         <div>Side</div>
@@ -126,7 +125,8 @@ export const TradesList: React.FC<TradesListProps> = ({ trades, cancellations = 
         <div className="text-right">Debug</div>
       </div>
 
-      <div className="flex-1 overflow-y-auto pr-2 space-y-1 custom-scrollbar">
+      {/* Desktop list */}
+      <div className="hidden sm:block flex-1 overflow-y-auto pr-2 space-y-1 custom-scrollbar min-h-0">
         {filteredEvents.map((event, i) => {
           const key = `${event.type}-${i}-${event.timestamp}`;
           if (event.type === 'trade') {
@@ -135,15 +135,15 @@ export const TradesList: React.FC<TradesListProps> = ({ trades, cancellations = 
             return (
               <div key={key}>
                 <div className="grid grid-cols-[95px_95px_95px_110px_90px_1fr] items-center py-1.5 text-sm border-b border-emerald-100 last:border-0 bg-emerald-50/10 hover:bg-emerald-50 transition-colors rounded px-1 cursor-pointer" onClick={() => toggleRow(key)}>
-                  <div className="text-gray-500 font-mono text-xs">{formatTime(trade.timestamp)}</div>
+                  <div className="text-gray-500 font-mono text-xs min-w-0">{formatTime(trade.timestamp)}</div>
                   <div className="text-[10px] uppercase tracking-wide text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-1.5 py-0.5 w-fit">Fill</div>
                   <div className={`flex items-center gap-1 font-medium ${isBuy ? 'text-emerald-600' : 'text-red-600'}`}>
                     {isBuy ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownRight className="w-3 h-3" />}
                     {isBuy ? 'BUY' : 'SELL'}
                   </div>
-                  <div className="text-right font-mono text-gray-700">${trade.price?.toFixed(2) ?? '-'}</div>
-                  <div className="text-right font-mono text-xs text-gray-600 leading-tight">{trade.qty !== undefined ? (Number.isInteger(trade.qty) ? trade.qty : trade.qty.toFixed(4)) : '-'}</div>
-                  <div className="text-right font-mono text-xs text-gray-600 truncate" title={trade.reason}>{trade.reason || '-'}</div>
+                  <div className="text-right font-mono text-gray-700 min-w-0">${trade.price?.toFixed(2) ?? '-'}</div>
+                  <div className="text-right font-mono text-xs text-gray-600 leading-tight min-w-0">{trade.qty !== undefined ? (Number.isInteger(trade.qty) ? trade.qty : trade.qty.toFixed(4)) : '-'}</div>
+                  <div className="text-right font-mono text-xs text-gray-600 truncate min-w-0" title={trade.reason}>{trade.reason || '-'}</div>
                 </div>
 
                 {openRows[key] && (
@@ -177,15 +177,15 @@ export const TradesList: React.FC<TradesListProps> = ({ trades, cancellations = 
             return (
               <div key={key}>
                 <div className="grid grid-cols-[95px_95px_95px_110px_90px_1fr] items-center py-1.5 text-sm border-b border-blue-100 last:border-0 bg-blue-50/30 hover:bg-blue-50 transition-colors rounded px-1 cursor-pointer" onClick={() => toggleRow(key)}>
-                  <div className="text-gray-500 font-mono text-xs">{formatTime(order.submitted_at || event.timestamp)}</div>
+                  <div className="text-gray-500 font-mono text-xs min-w-0">{formatTime(order.submitted_at || event.timestamp)}</div>
                   <div className="text-[10px] uppercase tracking-wide text-blue-700 bg-blue-100 border border-blue-200 rounded px-1.5 py-0.5 w-fit animate-pulse">Pending</div>
                   <div className={`flex items-center gap-1 font-medium ${isBuy ? 'text-emerald-600' : 'text-red-600'}`}>
                     {isBuy ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownRight className="w-3 h-3" />}
                     {isBuy ? 'BUY' : 'SELL'}
                   </div>
-                  <div className="text-right font-mono text-gray-700">${order.price?.toFixed(2) ?? '-'}</div>
-                  <div className="text-right font-mono text-xs text-gray-600 leading-tight">{order.qty !== undefined ? (Number.isInteger(order.qty) ? order.qty : order.qty.toFixed(4)) : '-'}</div>
-                  <div className="text-right font-mono text-xs text-gray-600 truncate" title={order.reason}>{order.reason || '-'}</div>
+                  <div className="text-right font-mono text-gray-700 min-w-0">${order.price?.toFixed(2) ?? '-'}</div>
+                  <div className="text-right font-mono text-xs text-gray-600 leading-tight min-w-0">{order.qty !== undefined ? (Number.isInteger(order.qty) ? order.qty : order.qty.toFixed(4)) : '-'}</div>
+                  <div className="text-right font-mono text-xs text-gray-600 truncate min-w-0" title={order.reason}>{order.reason || '-'}</div>
                 </div>
 
                 {openRows[key] && (
@@ -224,15 +224,15 @@ export const TradesList: React.FC<TradesListProps> = ({ trades, cancellations = 
           return (
             <div key={key}>
               <div className="grid grid-cols-[95px_95px_95px_110px_90px_1fr] items-center py-1.5 text-sm border-b border-amber-100 last:border-0 bg-amber-50/30 hover:bg-amber-50 transition-colors rounded px-1" onClick={() => toggleRow(key)}>
-                <div className="text-gray-600 font-mono text-xs" title={`Submitted ${formatTime(cancel.submitted_at ?? cancel.timestamp)}`}>{formatTime(cancel.timestamp)}</div>
+                <div className="text-gray-600 font-mono text-xs min-w-0" title={`Submitted ${formatTime(cancel.submitted_at ?? cancel.timestamp)}`}>{formatTime(cancel.timestamp)}</div>
                 <div className="text-[10px] uppercase tracking-wide text-amber-700 bg-amber-100 border border-amber-200 rounded px-1.5 py-0.5 w-fit">Cancel</div>
                 <div className={`flex items-center gap-1 font-medium ${isBuy ? 'text-emerald-600' : 'text-red-600'}`}>
                   {isBuy ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownRight className="w-3 h-3" />}
                   {isBuy ? 'BUY' : 'SELL'}
                 </div>
-                <div className="text-right font-mono text-gray-700">${cancel.price?.toFixed(2) ?? '-'}</div>
-                <div className="text-right font-mono text-xs text-gray-600 leading-tight">{cancel.qty !== undefined ? (Number.isInteger(cancel.qty) ? cancel.qty : cancel.qty.toFixed(4)) : '-'}</div>
-                <div className="text-right text-xs text-gray-700">{gates || 'TOX'} {restingSec.toFixed(1)}s | z-score {zscore.toFixed(2)} spread {spread.toFixed(2)}</div>
+                <div className="text-right font-mono text-gray-700 min-w-0">${cancel.price?.toFixed(2) ?? '-'}</div>
+                <div className="text-right font-mono text-xs text-gray-600 leading-tight min-w-0">{cancel.qty !== undefined ? (Number.isInteger(cancel.qty) ? cancel.qty : cancel.qty.toFixed(4)) : '-'}</div>
+                <div className="text-right text-xs text-gray-700 truncate">{gates || 'TOX'} {restingSec.toFixed(1)}s | z-score {zscore.toFixed(2)} spread {spread.toFixed(2)}</div>
               </div>
 
               {openRows[key] && (
@@ -255,6 +255,140 @@ export const TradesList: React.FC<TradesListProps> = ({ trades, cancellations = 
                     <button onClick={() => toggleRow(key)} className="px-2 py-1 text-xs bg-gray-100 rounded">Close</button>
                     <button onClick={() => copyJSON(cancel)} className="px-2 py-1 text-xs bg-gray-100 rounded">Copy JSON</button>
                   </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Mobile stacked list */}
+      <div className="sm:hidden flex-1 overflow-y-auto space-y-2 min-h-0">
+        {filteredEvents.map((event, i) => {
+          const key = `${event.type}-${i}-${event.timestamp}`;
+          if (event.type === 'trade') {
+            const trade = event.trade;
+            const isBuy = trade.side === 'buy';
+            return (
+              <div key={key} className="bg-white border border-gray-100 rounded-lg p-3 shadow-sm">
+                <div className="flex items-start justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="font-mono text-xs text-gray-500">{formatTime(trade.timestamp)}</div>
+                    <div className="text-[10px] uppercase tracking-wide text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-1.5 py-0.5">Fill</div>
+                  </div>
+                  <div className={`text-xs font-semibold ${isBuy ? 'text-emerald-600' : 'text-red-600'}`}>{isBuy ? 'BUY' : 'SELL'}</div>
+                </div>
+
+                <div className="mt-2 flex items-center justify-between">
+                  <div className="font-mono text-sm">${trade.price?.toFixed(2) ?? '-'}</div>
+                  <div className="font-mono text-sm">{trade.qty !== undefined ? (Number.isInteger(trade.qty) ? trade.qty : trade.qty.toFixed(4)) : '-'}</div>
+                </div>
+
+                <div className="mt-2 text-xs text-gray-600 truncate">{trade.reason || '-'}</div>
+
+                {openRows[key] && (
+                  <div className="mt-3 border-t pt-3 text-xs text-gray-700">
+                    <div className="font-medium">Trade Detail</div>
+                    <div className="text-[13px] text-gray-600 mt-1">Type: {trade.type || 'taker'}</div>
+                    <div className="text-[13px] text-gray-600">Reason: {trade.reason || '-'}</div>
+                    <div className="mt-2 flex gap-2">
+                      <button onClick={() => toggleRow(key)} className="px-2 py-1 text-xs bg-gray-100 rounded">Close</button>
+                      <button onClick={() => copyJSON(trade)} className="px-2 py-1 text-xs bg-gray-100 rounded">Copy JSON</button>
+                    </div>
+                  </div>
+                )}
+
+                {!openRows[key] && (
+                  <div className="mt-3 flex justify-end">
+                    <button onClick={() => toggleRow(key)} className="px-2 py-1 text-xs bg-gray-50 rounded border">Details</button>
+                  </div>
+                )}
+              </div>
+            );
+          }
+
+          if (event.type === 'pending') {
+            const order = event.order;
+            const isBuy = order.side === 'buy';
+            return (
+              <div key={key} className="bg-white border border-gray-100 rounded-lg p-3 shadow-sm">
+                <div className="flex items-start justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="font-mono text-xs text-gray-500">{formatTime(order.submitted_at || event.timestamp)}</div>
+                    <div className="text-[10px] uppercase tracking-wide text-blue-700 bg-blue-50 border border-blue-100 rounded px-1.5 py-0.5">Pending</div>
+                  </div>
+                  <div className={`text-xs font-semibold ${isBuy ? 'text-emerald-600' : 'text-red-600'}`}>{isBuy ? 'BUY' : 'SELL'}</div>
+                </div>
+
+                <div className="mt-2 flex items-center justify-between">
+                  <div className="font-mono text-sm">${order.price?.toFixed(2) ?? '-'}</div>
+                  <div className="font-mono text-sm">{order.qty !== undefined ? (Number.isInteger(order.qty) ? order.qty : order.qty.toFixed(4)) : '-'}</div>
+                </div>
+
+                <div className="mt-2 text-xs text-gray-600 truncate">{order.reason || '-'}</div>
+
+                {openRows[key] && (
+                  <div className="mt-3 border-t pt-3 text-xs text-gray-700">
+                    <div className="font-medium">Order Detail</div>
+                    <div className="text-[13px] text-gray-600 mt-1">Type: {order.type || 'maker'}</div>
+                    <div className="text-[13px] text-gray-600">Status: {order.status}</div>
+                    <div className="text-[13px] text-gray-600">Reason: {order.reason || '-'}</div>
+                    <div className="mt-2 flex gap-2">
+                      <button onClick={() => toggleRow(key)} className="px-2 py-1 text-xs bg-gray-100 rounded">Close</button>
+                      <button onClick={() => copyJSON(order)} className="px-2 py-1 text-xs bg-gray-100 rounded">Copy JSON</button>
+                    </div>
+                  </div>
+                )}
+
+                {!openRows[key] && (
+                  <div className="mt-3 flex justify-end">
+                    <button onClick={() => toggleRow(key)} className="px-2 py-1 text-xs bg-gray-50 rounded border">Details</button>
+                  </div>
+                )}
+              </div>
+            );
+          }
+
+          const cancel = event.cancel;
+          const isBuy = cancel.side === 'buy';
+          const zscore = cancel.toxicity?.zscore ?? 0;
+          const spread = cancel.toxicity?.spread ?? 0;
+          const restingSec = (cancel.resting_ms ?? 0) / 1000;
+          const gates = [cancel.trigger_detail?.zscore_gate ? 'Z-SCORE' : null].filter(Boolean).join('+');
+
+          return (
+            <div key={key} className="bg-white border border-gray-100 rounded-lg p-3 shadow-sm">
+              <div className="flex items-start justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="font-mono text-xs text-gray-500">{formatTime(cancel.timestamp)}</div>
+                  <div className="text-[10px] uppercase tracking-wide text-amber-700 bg-amber-50 border border-amber-100 rounded px-1.5 py-0.5">Cancel</div>
+                </div>
+                <div className={`text-xs font-semibold ${isBuy ? 'text-emerald-600' : 'text-red-600'}`}>{isBuy ? 'BUY' : 'SELL'}</div>
+              </div>
+
+              <div className="mt-2 flex items-center justify-between">
+                <div className="font-mono text-sm">${cancel.price?.toFixed(2) ?? '-'}</div>
+                <div className="font-mono text-sm">{cancel.qty !== undefined ? (Number.isInteger(cancel.qty) ? cancel.qty : cancel.qty.toFixed(4)) : '-'}</div>
+              </div>
+
+              <div className="mt-2 text-xs text-gray-600 truncate">{gates || 'TOX'} {restingSec.toFixed(1)}s | z-score {zscore.toFixed(2)} spread {spread.toFixed(2)}</div>
+
+              {openRows[key] && (
+                <div className="mt-3 border-t pt-3 text-xs text-gray-700">
+                  <div className="font-medium">Cancel Detail</div>
+                  <div className="text-[13px] text-gray-600 mt-1">Submitted: {formatTime(cancel.submitted_at ?? cancel.timestamp)} ({((cancel.resting_ms ?? 0) / 1000).toFixed(2)}s)</div>
+                  <div className="text-[13px] text-gray-600">Reason: {cancel.reason}</div>
+                  <div className="text-[13px] text-gray-600">Triggers: {gates || 'Z-SCORE'}</div>
+                  <div className="mt-2 flex gap-2">
+                    <button onClick={() => toggleRow(key)} className="px-2 py-1 text-xs bg-gray-100 rounded">Close</button>
+                    <button onClick={() => copyJSON(cancel)} className="px-2 py-1 text-xs bg-gray-100 rounded">Copy JSON</button>
+                  </div>
+                </div>
+              )}
+
+              {!openRows[key] && (
+                <div className="mt-3 flex justify-end">
+                  <button onClick={() => toggleRow(key)} className="px-2 py-1 text-xs bg-gray-50 rounded border">Details</button>
                 </div>
               )}
             </div>

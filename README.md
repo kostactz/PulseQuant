@@ -1,45 +1,75 @@
 # PulseQuant
 
-In-browser high-performance Statistical Arbitrage (Stat Arb) trading tool and simulator. Features a React Next.js frontend and a Python trading engine running securely in Pyodide.
+[Live preview](https://pulsequant.kostas-chatzis.me/)
 
-- Web stack: Next.js + TypeScript + Tailwind
-- Core engine: Python (`public/python/engine.py`), sandboxed in WebAssembly via `workers/pythonEngine.worker.ts`
-- Live data: Binance WebSocket adapter with dynamic pair selection (Target vs. Feature assets)
-- Analysis: Real-time Z-Score, Beta, and spread calculation with interactive charting
-- Execution: Paper trading with portfolio tracking and simulated order fills
-- Full test suite: Playwright integration + unit tests (Vitest, PyTest)
+**PulseQuant** is a high-performance, in-browser Statistical Arbitrage (Stat Arb) trading tool and simulator, for crypto Perpetual Futures on Binance. It combines a modern React/Next.js frontend with a robust Python trading engine running in WebAssembly (Pyodide), enabling execution directly in the browser.
 
-## What is in this repo
+## Mission
 
-- `app/`: Next.js UI pages and routing
-- `components/`: Real-time charts, order books, trades, and strategy controls
-- `hooks/`: `useMarketData`, `usePythonWorker`, `useMobile`
-- `lib/market-data`: `MarketDataService`, adapters (`BinanceAdapter`, `MockAdapter`)
-- `lib/order/OrderManager.ts`: Paper order logic and execution handling
-- `lib/security`: API credentials and local cryptography helpers
-- `public/python`: Pyodide Stat Arb engine (`engine.py`) and math libraries
-- `workers/pythonEngine.worker.ts`: WebWorker bridge isolating heavy math from the UI thread
-- `test/`: Vitest unit tests for UI and hooks
-- `e2e/`: Playwright end-to-end tests for browser experience
+It implements a UI and trading engine, designed for medium-frequency trading of cointegrated crypto pairs, featuring real-time state estimation and automated execution logic.
 
-## Key behaviors
+### Technical Highlights
+- **Python Engine (`engine.py`):** A custom event-driven engine featuring:
+    - **Recursive Kalman Filters:** $O(1)$ dynamic estimation of Beta (hedge ratio) and Alpha.
+    - **Causal Analytics:** Z-Score and spread calculations using Beta priors to eliminate look-ahead bias.
+    - **Zero-Order Hold (ZOH):** Precise alignment of asynchronous market data ticks.
+    - **Maker-Taker State Machine:** Sophisticated execution management with dynamic cost hurdles (fees, slippage, funding).
+- **WASM Integration:** Heavy quantitative logic is offloaded to WebWorkers via **Pyodide**, ensuring a responsive 60fps UI.
+- **Backtesting Suite:** A high-fidelity replay tool (`tools/replay.py`) that simulates market-order slippage and limit-order trade-throughs.
 
-1. User dynamically selects two assets (Target and Feature) from the UI.
-2. Market data streams via `MarketDataService` using direct Binance WebSockets.
-3. Ticks are packaged and dispatched to the WebWorker, avoiding main-thread blocking.
-4. `engine.py` maintains an $O(1)$ `BivariateRingBuffer` to compute continuous rolling Beta and Z-Scores.
-5. The Worker emits compact strategy signals back to the UI for charting and execution state updates.
-6. When pairs are switched, the engine and WebSockets securely tear down and reset to prevent data corruption.
+A details analysis of the algorithmic implementation can be found in [PERFORMANCE.md](./PERFORMANCE.md)
 
-## Run locally
+---
 
-1. `npm install`
-2. `npm run dev`
-3. Open `http://localhost:3000`
+## Latest Analysis & Reports
 
-## Tests
+We recently conducted an exhaustive cointegration and backtesting study on the **ORDI/SUI** pair:
+**[View the Technical Report: ORDI/SUI Cointegration Analysis](reports/publish.md)**
 
-- Unit (TS): `npm run test:unit` (Vitest)
-- Unit (Python): `npm run test:py` (PyTest for engine logic)
-- E2E: `npm run test:e2e` (Playwright)
-- All: `npm run test`
+---
+
+## Development & Quick Start
+
+### 1. Local Development
+```bash
+npm install
+npm run dev
+```
+Open [http://localhost:3000](http://localhost:3000) to access the live trading dashboard.
+
+### 2. Backtesting Workflow
+Download historical data from Binance Vision and run the engine replay:
+```bash
+# Fetch data
+python tools/fetch_vision_data.py --symbols ORDIUSDC SUIUSDC --start-date 2026-03-01 --end-date 2026-03-31 --output capture.jsonl
+
+# Run replay
+python tools/replay.py --input capture.jsonl --target ORDIUSDC --feature SUIUSDC --verbose
+```
+
+### 3. Cointegration Analysis
+Discover new pairs and find optimal entry parameters:
+```bash
+python public/python/scripts/cointegration_test.py --target-ticker ORDIUSDC --feature-ticker SUIUSDC --backtest 40
+```
+
+---
+
+## Testing Suite
+
+PulseQuant maintains a rigorous testing environment across both TypeScript and Python:
+
+- **Full Suite:** `npm run test`
+- **Engine Logic:** `npm run test:py` (PyTest)
+- **UI & Hooks:** `npm run test:unit` (Vitest)
+- **E2E Integration:** `npm run test:e2e` (Playwright)
+
+## Repository Structure
+
+- `app/`: Next.js pages and global styles.
+- `public/python/`: The heart of the engine (`engine.py`) and analytics core.
+- `workers/`: Pyodide orchestrator for WebWorker execution.
+- `lib/market-data/`: Multi-adapter service for live (Binance) and mock data.
+- `tools/`: CLI utilities for data ingestion and optimization.
+
+---
