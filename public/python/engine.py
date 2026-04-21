@@ -1054,23 +1054,30 @@ class ExecutionManager:
         target_qty = round(target_qty, 3)
         feature_qty = round(feature_qty, 3)
         
+        import uuid
+        order_id = str(uuid.uuid4())
         self.bus.publish('OUTBOUND_INTENT', {
             'action': 'PLACE_ORDER',
-            'clientOrderId': str(uuid.uuid4()),
+            'order_id': order_id,
+            'clientOrderId': order_id,
             'symbol': self.target,
             'side': target_side,
             'type': 'MARKET',
+            'qty': target_qty,
             'quantity': target_qty,
             'price': 0.0,
             'position_id': self.current_position_id
         })
         
+        order_id_f = str(uuid.uuid4())
         self.bus.publish('OUTBOUND_INTENT', {
             'action': 'PLACE_ORDER',
-            'clientOrderId': str(uuid.uuid4()),
+            'order_id': order_id_f,
+            'clientOrderId': order_id_f,
             'symbol': self.feature,
             'side': feature_side,
             'type': 'MARKET',
+            'qty': feature_qty,
             'quantity': feature_qty,
             'price': 0.0,
             'position_id': self.current_position_id
