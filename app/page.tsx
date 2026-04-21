@@ -308,7 +308,7 @@ export default function Dashboard() {
         <SecuritySetupModal
           onSuccess={() => setIsUnlocked(true)}
           onSkip={() => executeModeSwitch('PAPER')}
-          env={tradingMode === 'PAPER' ? 'TESTNET' : tradingMode}
+          env={tradingMode as 'TESTNET' | 'MAINNET'}
         />
       )}
       

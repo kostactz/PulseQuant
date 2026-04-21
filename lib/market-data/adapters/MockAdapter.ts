@@ -31,7 +31,7 @@ export class MockAdapter implements MarketDataAdapter {
           ask *= 0.90;
         }
 
-        const tick = generateMockTick(bid, ask);
+        const tick = generateMockTick(bid, ask) as NormalizedTick;
         tick.symbol = symbol;
         this.lastBids[symbol] = tick.bid;
         this.lastAsks[symbol] = tick.ask;
