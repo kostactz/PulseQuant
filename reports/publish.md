@@ -94,7 +94,7 @@ The pair demonstrated remarkable statistical robustness:
 *   **Dynamic Hurst:** 0.0519 (Hyper-reverting)
 *   **Avg. Absolute Spread:** 16.81 bps
 
-![](./cointegration_analysis.report.png)
+![](./cointegration_analysis.publish.png)
 
 
 ### 3.2 Trading Performance (Out-of-Sample)
@@ -108,7 +108,7 @@ The backtest incorporated 115 bps of round-trip friction (fees and slippage).
 | **Max Drawdown** | 21.55% |
 | **Total Round Trips** | 50 |
 
-![](./cointegration_backtest.report.png)
+![](./cointegration_backtest.publish.png)
 
 ---
 
