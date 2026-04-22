@@ -39,20 +39,24 @@ Profitability is governed by two critical metrics:
 To handle non-stationary markets, we replace static OLS with a **Kalman Filter**. This algorithm treats the hedge ratio ($\beta$) and intercept ($\alpha$) as hidden states that evolve over time. The implementation uses a Constant Velocity model for the state transition:
 
 1.  **State Prediction:** We assume the state remains constant between observations, subject to process noise $\delta$:
+
     $$ \theta_{t|t-1} = \theta_{t-1} $$
     $$ P_{t|t-1} = P_{t-1} + Q $$
     Where $\theta = [\alpha, \beta]^T$ and $Q = \text{diag}(\delta, \delta)$ is the process noise covariance.
 
 2.  **Innovation (Measurement Error):** We compare the actual price $y_t$ with the predicted price:
+
     $$ \hat{y}_t = H_t \theta_{t|t-1} = \alpha + \beta x_t $$
     $$ e_t = y_t - \hat{y}_t $$
 
 3.  **Kalman Gain ($K_t$):** Determines how much we trust the new observation versus the previous state:
+
     $$ S_t = H_t P_{t|t-1} H_t^T + R $$
     $$ K_t = P_{t|t-1} H_t^T S_t^{-1} $$
     Where $R$ is the measurement noise variance.
 
 4.  **State Update:** The state and its covariance $P$ are adjusted based on the innovation:
+
     $$ \theta_t = \theta_{t|t-1} + K_t e_t $$
     $$ P_t = (I - K_t H_t) P_{t|t-1} $$
 
@@ -60,6 +64,7 @@ This recursive update allows for a **Dynamic Hedge Ratio** that reacts instantly
 
 ### 2.6 Z-Score Normalization and Signal Generation
 The **Z-score** transforms the raw spread into a unitless metric that expresses the current deviation in terms of standard deviations from the rolling mean. In our framework, the spread is calculated using the *prior* period's hedge ratio to avoid look-ahead bias:
+
 $$ \text{Spread}_t = \ln(P_{target, t}) - (\beta_{t-1} \ln(P_{feature, t}) + \alpha_{t-1}) $$
 The Z-score is then computed as:
 $$ Z_t = \frac{\text{Spread}_t - \mu_{\text{rolling}}}{\sigma_{\text{rolling}}} $$
